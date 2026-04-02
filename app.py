@@ -92,7 +92,7 @@ elif page == "Classify":
             }
 
     with right:
-        st.info("This prototype uses rules-based mock logic for demo purposes.")
+        st.info("Check if your product description is customs-ready before shipment. Detect missing data, improve descriptions, and reduce shipment rejection risk.")
 
     if "last_result" in st.session_state:
         r = st.session_state["last_result"]
