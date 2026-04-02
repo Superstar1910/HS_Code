@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 
-st.set_page_config(page_title="HS Classification Demo", layout="wide")
+st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
 
 def classify_product(description, material, origin, category, value):
     desc = (description or "").lower()
@@ -50,11 +50,11 @@ def classify_product(description, material, origin, category, value):
             "explanation": "Insufficient structured data; manual review recommended."
         }
 
-st.sidebar.title("HS Classification Demo")
+st.sidebar.title("HS & Shipment Pre-Check")
 page = st.sidebar.radio("Navigate", ["Dashboard", "Classify", "Bulk Upload", "Review Queue", "Audit Trail"])
 
 if page == "Dashboard":
-    st.title("HS Classification Dashboard")
+    st.title("HS & Shipment Pre-Check Dashboard")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total SKUs", "12,450")
     c2.metric("Auto-Classified", "78%")
