@@ -5,10 +5,14 @@ from datetime import datetime
 
 st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
 
+# Columns produced by classify_product — used to drop conflicts before bulk concat
+RESULT_COLUMNS = {"hs6", "uk_code", "confidence", "risk", "duty", "vat", "explanation"}
+
 
 def classify_product(description, material, origin, category, value):
     desc = (description or "").strip().lower()
     material_lower = (material or "").strip().lower()
+    category_lower = (category or "").strip().lower()
 
     if "scarf" in desc and "silk" in material_lower:
         return {
@@ -30,7 +34,7 @@ def classify_product(description, material, origin, category, value):
             "vat": "20%",
             "explanation": "Classified under handbags with outer surface of leather.",
         }
-    elif "perfume" in desc or "eau de parfum" in desc or category == "beauty":
+    elif "perfume" in desc or "eau de parfum" in desc or category_lower == "beauty":
         return {
             "hs6": "330300",
             "uk_code": "3303001000",
@@ -50,6 +54,21 @@ def classify_product(description, material, origin, category, value):
             "vat": "20%",
             "explanation": "Insufficient structured data; manual review recommended.",
         }
+
+
+def classify_row(row):
+    """Apply classify_product to a DataFrame row; safe for use with df.apply()."""
+    try:
+        val = float(row["value"])
+    except (ValueError, TypeError):
+        val = 0.0
+    return pd.Series(classify_product(
+        str(row["description"]),
+        str(row["material"]),
+        str(row["origin"]),
+        str(row["category"]),
+        val,
+    ))
 
 
 st.sidebar.title("HS & Shipment Pre-Check")
@@ -148,21 +167,10 @@ elif page == "Bulk Upload":
         if missing:
             st.error(f"Missing required columns: {', '.join(sorted(missing))}")
         else:
-            def classify_row(row):
-                try:
-                    val = float(row["value"])
-                except (ValueError, TypeError):
-                    val = 0.0
-                return pd.Series(classify_product(
-                    str(row["description"]),
-                    str(row["material"]),
-                    str(row["origin"]),
-                    str(row["category"]),
-                    val,
-                ))
-
+            # Drop any pre-existing result columns to avoid duplicate columns after concat
+            input_df = df.drop(columns=[c for c in RESULT_COLUMNS if c in df.columns])
             result_df = pd.concat(
-                [df.reset_index(drop=True), df.apply(classify_row, axis=1)],
+                [input_df.reset_index(drop=True), input_df.apply(classify_row, axis=1)],
                 axis=1,
             )
             st.success(f"Processed {len(result_df)} rows")
@@ -192,12 +200,12 @@ elif page == "Review Queue":
     st.write("**Manual review actions**")
     col1, col2 = st.columns(2)
 
-    if col1.button("Approve Selected"):
+    if col1.button("Approve All"):
         st.session_state["review_df"]["Status"] = "Approved"
         st.success("All items marked as approved.")
         st.rerun()
 
-    if col2.button("Override Selected"):
+    if col2.button("Override All"):
         st.session_state["review_df"]["Status"] = "Overridden — pending analyst"
         st.warning("All items flagged for analyst override.")
         st.rerun()
