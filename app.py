@@ -15,7 +15,8 @@ def classify_product(description, material, origin, category, value):
     category_lower = (category or "").strip().lower()
 
     # High-value items (>=£1,000) attract additional customs scrutiny
-    high_value = value >= 1000
+    # Round to pence to avoid floating-point edge cases near the threshold
+    high_value = round(value, 2) >= 1000.00
 
     if ("scarf" in desc or "scarves" in desc) and "silk" in material_lower:
         return {
@@ -51,10 +52,13 @@ def classify_product(description, material, origin, category, value):
             "hs6": "330300",
             "uk_code": "3303001000",
             "confidence": 0.81,
-            "risk": "RED",
+            "risk": "RED" if high_value else "AMBER",
             "duty": "6.5%",
             "vat": "20%",
-            "explanation": "Classified under perfumes and toilet waters; flagged red due to regulated cosmetics handling.",
+            "explanation": (
+                "Classified under perfumes and toilet waters; regulated cosmetics handling required."
+                + (" High declared value flagged for additional customs scrutiny." if high_value else "")
+            ),
         }
     elif category_lower == "food" or any(
         w in desc for w in ("chocolate", "biscuit", "candy", "confection", "food", "snack")
@@ -65,8 +69,8 @@ def classify_product(description, material, origin, category, value):
             "confidence": 0.65,
             "risk": "AMBER",
             "duty": "varies",
-            "vat": "0%",
-            "explanation": "Classified under miscellaneous food preparations; phytosanitary and food safety checks required.",
+            "vat": "20%",
+            "explanation": "Classified under miscellaneous food preparations; phytosanitary and food safety checks required. Note: confectionery (chocolate, biscuits, candy) is standard-rated at 20% VAT in the UK.",
         }
     elif category_lower == "fashion_accessories" or any(
         w in desc for w in ("belt", "wallet", "glove", "hat", "cap", "tie", "brooch")
@@ -75,10 +79,13 @@ def classify_product(description, material, origin, category, value):
             "hs6": "621790",
             "uk_code": "6217900000",
             "confidence": 0.70,
-            "risk": "GREEN",
+            "risk": "RED" if high_value else "GREEN",
             "duty": "12%",
             "vat": "20%",
-            "explanation": "Classified under other made-up clothing accessories; verify composition for precise subheading.",
+            "explanation": (
+                "Classified under other made-up clothing accessories; verify composition for precise subheading."
+                + (" High declared value flagged for additional customs scrutiny." if high_value else "")
+            ),
         }
     else:
         return {
@@ -143,17 +150,28 @@ page = st.sidebar.radio("Navigate", ["Dashboard", "Classify", "Bulk Upload", "Re
 
 if page == "Dashboard":
     st.title("HS & Shipment Pre-Check Dashboard")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total SKUs", "12,450")
-    c2.metric("Auto-Classified", "78%")
-    c3.metric("Pending Review", "1,120")
-    c4.metric("Accuracy", "95.4%")
 
-    st.subheader("Risk Distribution")
-    risk_df = pd.DataFrame({
-        "Risk": ["GREEN", "AMBER", "RED"],
-        "Count": [9710, 2140, 600],
-    })
+    session_items = st.session_state.get("review_items", [])
+    session_total = len(session_items)
+    session_pending = sum(1 for i in session_items if i["Status"] == "Pending review")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Session SKUs", session_total if session_total else "—")
+    c2.metric("Pending Review", session_pending if session_total else "—")
+    c3.metric("Approved", sum(1 for i in session_items if i["Status"] == "Approved") if session_total else "—")
+    c4.metric("Overridden", sum(1 for i in session_items if "Overridden" in i["Status"]) if session_total else "—")
+
+    st.caption("Metrics reflect classifications performed in this session.")
+
+    st.subheader("Session Risk Distribution")
+    if session_items:
+        risk_counts = {"GREEN": 0, "AMBER": 0, "RED": 0}
+        for i in session_items:
+            risk_counts[i["Risk"]] = risk_counts.get(i["Risk"], 0) + 1
+        risk_df = pd.DataFrame({"Risk": list(risk_counts.keys()), "Count": list(risk_counts.values())})
+    else:
+        st.caption("No classifications yet. Demo data shown below.")
+        risk_df = pd.DataFrame({"Risk": ["GREEN", "AMBER", "RED"], "Count": [9710, 2140, 600]})
     st.bar_chart(risk_df.set_index("Risk"))
 
 elif page == "Classify":
@@ -162,9 +180,9 @@ elif page == "Classify":
     left, right = st.columns([2, 1])
 
     with left:
-        description = st.text_input("Product Description", "Luxury silk scarf with hand-rolled edges")
-        material = st.text_input("Material Composition", "100% silk")
-        origin = st.text_input("Country of Origin", "IT")
+        description = st.text_input("Product Description", "Luxury silk scarf with hand-rolled edges", max_chars=500)
+        material = st.text_input("Material Composition", "100% silk", max_chars=200)
+        origin = st.text_input("Country of Origin", "IT", max_chars=50)
         category = st.selectbox("Category", ["fashion_accessories", "bags", "beauty", "food", "other"])
         value = st.number_input("Declared Value (£)", min_value=0.0, value=250.0, step=10.0)
 
@@ -179,7 +197,7 @@ elif page == "Classify":
                     "origin": origin.strip(),
                     "category": category,
                     "value": value,
-                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "timestamp": datetime.now().isoformat(timespec="microseconds"),
                     **result,
                 }
                 _add_to_review_queue(st.session_state["last_result"])
@@ -225,9 +243,16 @@ elif page == "Bulk Upload":
 
     if uploaded:
         try:
-            df = pd.read_csv(uploaded)
+            df = pd.read_csv(uploaded, nrows=5001)
+        except pd.errors.ParserError:
+            st.error("CSV format is invalid — check that columns are comma-separated and the file is UTF-8 encoded.")
+            st.stop()
         except Exception as e:
-            st.error(f"Failed to parse CSV: {e}")
+            st.error(f"Failed to read file: {e}")
+            st.stop()
+
+        if len(df) > 5000:
+            st.error("CSV exceeds the 5,000-row limit. Split the file and re-upload.")
             st.stop()
 
         required = {"description", "material", "origin", "category", "value"}
@@ -235,8 +260,12 @@ elif page == "Bulk Upload":
         if missing:
             st.error(f"Missing required columns: {', '.join(sorted(missing))}")
         else:
+            # Warn if pre-existing result columns will be overwritten
+            overlapping = [c for c in RESULT_COLUMNS if c in df.columns]
+            if overlapping:
+                st.warning(f"The following columns from your CSV will be overwritten by classification results: {', '.join(sorted(overlapping))}")
             # Drop any pre-existing result columns to avoid duplicate columns after concat
-            input_df = df.drop(columns=[c for c in RESULT_COLUMNS if c in df.columns])
+            input_df = df.drop(columns=overlapping)
             try:
                 result_df = pd.concat(
                     [input_df.reset_index(drop=True), input_df.apply(classify_row, axis=1)],
@@ -275,14 +304,16 @@ elif page == "Review Queue":
         col1, col2 = st.columns(2)
 
         if col1.button("Approve All"):
-            for item in items:
-                item["Status"] = "Approved"
+            st.session_state["review_items"] = [
+                {**item, "Status": "Approved"} for item in items
+            ]
             st.success("All items marked as approved.")
             st.rerun()
 
         if col2.button("Override All"):
-            for item in items:
-                item["Status"] = "Overridden — pending analyst"
+            st.session_state["review_items"] = [
+                {**item, "Status": "Overridden — pending analyst"} for item in items
+            ]
             st.warning("All items flagged for analyst override.")
             st.rerun()
     else:
@@ -291,13 +322,15 @@ elif page == "Review Queue":
 elif page == "Audit Trail":
     st.title("Audit Trail")
 
-    # Use fixed timestamps so they don't shift on every rerun
-    today = datetime.now().strftime("%Y-%m-%d")
-    seed_logs = [
-        {"Timestamp": f"{today} 09:12:00", "Event": "SKU123 classified as 6214100090 by system"},
-        {"Timestamp": f"{today} 09:17:00", "Event": "Reviewed by compliance_officer_01"},
-        {"Timestamp": f"{today} 09:18:00", "Event": "Approved and published to product master"},
-    ]
+    # Initialise seed logs once per session so they don't regenerate on every rerun
+    if "seed_logs" not in st.session_state:
+        today = datetime.now().strftime("%Y-%m-%d")
+        st.session_state["seed_logs"] = [
+            {"Timestamp": f"{today} 09:12:00", "Event": "SKU123 classified as 6214100090 by system"},
+            {"Timestamp": f"{today} 09:17:00", "Event": "Reviewed by compliance_officer_01"},
+            {"Timestamp": f"{today} 09:18:00", "Event": "Approved and published to product master"},
+        ]
+    seed_logs = st.session_state["seed_logs"]
 
     # Append any items classified this session
     session_logs = []
