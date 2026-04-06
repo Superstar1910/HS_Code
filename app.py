@@ -5,6 +5,14 @@ from datetime import datetime
 
 st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
 
+# Threshold above which items attract additional customs scrutiny
+HIGH_VALUE_THRESHOLD = 1000.00
+
+# Valid risk levels
+RISK_GREEN = "GREEN"
+RISK_AMBER = "AMBER"
+RISK_RED = "RED"
+
 # Columns produced by classify_product — used to drop conflicts before bulk concat
 RESULT_COLUMNS = {"hs6", "uk_code", "confidence", "risk", "duty", "vat", "explanation"}
 
@@ -14,16 +22,16 @@ def classify_product(description, material, origin, category, value):
     material_lower = (material or "").strip().lower()
     category_lower = (category or "").strip().lower()
 
-    # High-value items (>=£1,000) attract additional customs scrutiny
+    # High-value items attract additional customs scrutiny
     # Round to pence to avoid floating-point edge cases near the threshold
-    high_value = round(value, 2) >= 1000.00
+    high_value = round(value, 2) >= HIGH_VALUE_THRESHOLD
 
     if ("scarf" in desc or "scarves" in desc) and "silk" in material_lower:
         return {
             "hs6": "621410",
             "uk_code": "6214100090",
             "confidence": 0.94,
-            "risk": "RED" if high_value else "GREEN",
+            "risk": RISK_RED if high_value else RISK_GREEN,
             "duty": "8%",
             "vat": "20%",
             "explanation": (
@@ -39,7 +47,7 @@ def classify_product(description, material, origin, category, value):
             "hs6": "420221",
             "uk_code": "4202210000",
             "confidence": 0.88,
-            "risk": "RED" if high_value else "AMBER",
+            "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "16%",
             "vat": "20%",
             "explanation": (
@@ -52,7 +60,7 @@ def classify_product(description, material, origin, category, value):
             "hs6": "330300",
             "uk_code": "3303001000",
             "confidence": 0.81,
-            "risk": "RED" if high_value else "AMBER",
+            "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "6.5%",
             "vat": "20%",
             "explanation": (
@@ -67,10 +75,13 @@ def classify_product(description, material, origin, category, value):
             "hs6": "210690",
             "uk_code": "2106909900",
             "confidence": 0.65,
-            "risk": "AMBER",
+            "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "varies",
             "vat": "20%",
-            "explanation": "Classified under miscellaneous food preparations; phytosanitary and food safety checks required. Note: confectionery (chocolate, biscuits, candy) is standard-rated at 20% VAT in the UK.",
+            "explanation": (
+                "Classified under miscellaneous food preparations; phytosanitary and food safety checks required. Note: confectionery (chocolate, biscuits, candy) is standard-rated at 20% VAT in the UK."
+                + (" High declared value flagged for additional customs scrutiny." if high_value else "")
+            ),
         }
     elif category_lower == "fashion_accessories" or any(
         w in desc for w in ("belt", "wallet", "glove", "hat", "cap", "tie", "brooch")
@@ -79,7 +90,7 @@ def classify_product(description, material, origin, category, value):
             "hs6": "621790",
             "uk_code": "6217900000",
             "confidence": 0.70,
-            "risk": "RED" if high_value else "GREEN",
+            "risk": RISK_RED if high_value else RISK_GREEN,
             "duty": "12%",
             "vat": "20%",
             "explanation": (
@@ -92,11 +103,23 @@ def classify_product(description, material, origin, category, value):
             "hs6": "UNCLASSIFIED",
             "uk_code": "UNCLASSIFIED",
             "confidence": 0.52,
-            "risk": "AMBER",
+            "risk": RISK_AMBER,
             "duty": "TBD",
             "vat": "20%",
             "explanation": "Insufficient structured data; manual review recommended.",
         }
+
+
+def _safe_str(v) -> str:
+    """Convert a value to string, returning empty string for NaN/None."""
+    if v is None:
+        return ""
+    try:
+        if pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(v)
 
 
 def classify_row(row):
@@ -107,10 +130,10 @@ def classify_row(row):
         val = 0.0
     try:
         return pd.Series(classify_product(
-            str(row["description"]),
-            str(row["material"]),
-            str(row["origin"]),
-            str(row["category"]),
+            _safe_str(row["description"]),
+            _safe_str(row["material"]),
+            _safe_str(row["origin"]),
+            _safe_str(row["category"]),
             val,
         ))
     except Exception as e:
@@ -165,9 +188,9 @@ if page == "Dashboard":
 
     st.subheader("Session Risk Distribution")
     if session_items:
-        risk_counts = {"GREEN": 0, "AMBER": 0, "RED": 0}
+        risk_counts = {RISK_GREEN: 0, RISK_AMBER: 0, RISK_RED: 0}
         for i in session_items:
-            risk_counts[i["Risk"]] = risk_counts.get(i["Risk"], 0) + 1
+            risk_counts[i["Risk"]] += 1
         risk_df = pd.DataFrame({"Risk": list(risk_counts.keys()), "Count": list(risk_counts.values())})
     else:
         st.caption("No classifications yet. Demo data shown below.")
@@ -326,9 +349,9 @@ elif page == "Audit Trail":
     if "seed_logs" not in st.session_state:
         today = datetime.now().strftime("%Y-%m-%d")
         st.session_state["seed_logs"] = [
-            {"Timestamp": f"{today} 09:12:00", "Event": "SKU123 classified as 6214100090 by system"},
-            {"Timestamp": f"{today} 09:17:00", "Event": "Reviewed by compliance_officer_01"},
-            {"Timestamp": f"{today} 09:18:00", "Event": "Approved and published to product master"},
+            {"Timestamp": f"{today}T09:12:00", "Event": "SKU123 classified as 6214100090 by system"},
+            {"Timestamp": f"{today}T09:17:00", "Event": "Reviewed by compliance_officer_01"},
+            {"Timestamp": f"{today}T09:18:00", "Event": "Approved and published to product master"},
         ]
     seed_logs = st.session_state["seed_logs"]
 
