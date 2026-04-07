@@ -162,7 +162,7 @@ def _add_to_review_queue(result: dict):
             "_ts": result["timestamp"],
             "Product": result["description"],
             "Suggested Code": result["uk_code"],
-            "Confidence": f'{int(result["confidence"] * 100)}%',
+            "Confidence": f'{round(result["confidence"] * 100)}%',
             "Risk": result["risk"],
             "Status": "Pending review",
         })
@@ -190,7 +190,7 @@ if page == "Dashboard":
     if session_items:
         risk_counts = {RISK_GREEN: 0, RISK_AMBER: 0, RISK_RED: 0}
         for i in session_items:
-            risk_counts[i["Risk"]] += 1
+            risk_counts[i["Risk"]] = risk_counts.get(i["Risk"], 0) + 1
         risk_df = pd.DataFrame({"Risk": list(risk_counts.keys()), "Count": list(risk_counts.values())})
     else:
         st.caption("No classifications yet. Demo data shown below.")
@@ -214,7 +214,7 @@ elif page == "Classify":
                 st.warning("Please enter a product description before classifying.")
             else:
                 result = classify_product(description, material, origin, category, value)
-                st.session_state["last_result"] = {
+                entry = {
                     "description": description.strip(),
                     "material": material.strip(),
                     "origin": origin.strip(),
@@ -223,7 +223,14 @@ elif page == "Classify":
                     "timestamp": datetime.now().isoformat(timespec="microseconds"),
                     **result,
                 }
-                _add_to_review_queue(st.session_state["last_result"])
+                st.session_state["last_result"] = entry
+                _add_to_review_queue(entry)
+                if "audit_log" not in st.session_state:
+                    st.session_state["audit_log"] = []
+                st.session_state["audit_log"].append({
+                    "Timestamp": entry["timestamp"],
+                    "Event": f'"{entry["description"]}" classified as {entry["uk_code"]} (risk: {entry["risk"]})',
+                })
 
     with right:
         st.info(
@@ -237,7 +244,7 @@ elif page == "Classify":
         a, b, c = st.columns(3)
         a.metric("HS6", r["hs6"])
         b.metric("UK Commodity Code", r["uk_code"])
-        c.metric("Confidence", f'{int(r["confidence"] * 100)}%')
+        c.metric("Confidence", f'{round(r["confidence"] * 100)}%')
 
         d, e, f = st.columns(3)
         d.metric("Risk", r["risk"])
@@ -267,6 +274,7 @@ elif page == "Bulk Upload":
     if uploaded:
         try:
             df = pd.read_csv(uploaded, nrows=5001)
+            df.columns = df.columns.str.strip().str.lower()
         except pd.errors.ParserError:
             st.error("CSV format is invalid — check that columns are comma-separated and the file is UTF-8 encoded.")
             st.stop()
@@ -300,6 +308,12 @@ elif page == "Bulk Upload":
 
             error_count = (result_df["hs6"] == "ERROR").sum()
             st.success(f"Processed {len(result_df)} rows" + (f" ({error_count} errors)" if error_count else ""))
+            if "audit_log" not in st.session_state:
+                st.session_state["audit_log"] = []
+            st.session_state["audit_log"].append({
+                "Timestamp": datetime.now().isoformat(timespec="microseconds"),
+                "Event": f"Bulk upload processed {len(result_df)} rows from '{uploaded.name}'" + (f" ({error_count} errors)" if error_count else ""),
+            })
             st.dataframe(result_df, use_container_width=True)
             st.download_button(
                 "Download Results CSV",
@@ -355,14 +369,6 @@ elif page == "Audit Trail":
         ]
     seed_logs = st.session_state["seed_logs"]
 
-    # Append any items classified this session
-    session_logs = []
-    if "last_result" in st.session_state:
-        r = st.session_state["last_result"]
-        session_logs.append({
-            "Timestamp": r["timestamp"],
-            "Event": f'"{r["description"]}" classified as {r["uk_code"]} (risk: {r["risk"]})',
-        })
-
+    session_logs = st.session_state.get("audit_log", [])
     logs = pd.DataFrame(seed_logs + session_logs)
     st.dataframe(logs, use_container_width=True)
