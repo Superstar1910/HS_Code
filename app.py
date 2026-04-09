@@ -103,10 +103,13 @@ def classify_product(description, material, origin, category, value):
             "hs6": "UNCLASSIFIED",
             "uk_code": "UNCLASSIFIED",
             "confidence": 0.52,
-            "risk": RISK_AMBER,
+            "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "TBD",
             "vat": "20%",
-            "explanation": "Insufficient structured data; manual review recommended.",
+            "explanation": (
+                "Insufficient structured data; manual review recommended."
+                + (" High declared value flagged for additional customs scrutiny." if high_value else "")
+            ),
         }
 
 
@@ -141,7 +144,7 @@ def classify_row(row):
             "hs6": "ERROR",
             "uk_code": "ERROR",
             "confidence": 0.0,
-            "risk": "AMBER",
+            "risk": RISK_AMBER,
             "duty": "TBD",
             "vat": "TBD",
             "explanation": f"Classification failed: {e}",
