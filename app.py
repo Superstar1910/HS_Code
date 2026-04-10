@@ -16,6 +16,10 @@ RISK_RED = "RED"
 # Columns produced by classify_product — used to drop conflicts before bulk concat
 RESULT_COLUMNS = {"hs6", "uk_code", "confidence", "risk", "duty", "vat", "explanation"}
 
+# Sentinel values used in result rows
+ERROR_CODE = "ERROR"
+UNCLASSIFIED_CODE = "UNCLASSIFIED"
+
 
 def classify_product(description, material, origin, category, value):
     desc = (description or "").strip().lower()
@@ -100,8 +104,8 @@ def classify_product(description, material, origin, category, value):
         }
     else:
         return {
-            "hs6": "UNCLASSIFIED",
-            "uk_code": "UNCLASSIFIED",
+            "hs6": UNCLASSIFIED_CODE,
+            "uk_code": UNCLASSIFIED_CODE,
             "confidence": 0.52,
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "TBD",
@@ -141,8 +145,8 @@ def classify_row(row):
         ))
     except Exception as e:
         return pd.Series({
-            "hs6": "ERROR",
-            "uk_code": "ERROR",
+            "hs6": ERROR_CODE,
+            "uk_code": ERROR_CODE,
             "confidence": 0.0,
             "risk": RISK_AMBER,
             "duty": "TBD",
@@ -153,8 +157,6 @@ def classify_row(row):
 
 def _add_to_review_queue(result: dict):
     """Add a classified item to the review queue if not already present."""
-    if "review_items" not in st.session_state:
-        st.session_state["review_items"] = []
     key = (result["description"], result["timestamp"])
     if not any(
         (item["_desc"], item["_ts"]) == key
@@ -171,13 +173,19 @@ def _add_to_review_queue(result: dict):
         })
 
 
+# Initialise session state keys once so all pages can rely on them existing
+if "review_items" not in st.session_state:
+    st.session_state["review_items"] = []
+if "audit_log" not in st.session_state:
+    st.session_state["audit_log"] = []
+
 st.sidebar.title("HS & Shipment Pre-Check")
 page = st.sidebar.radio("Navigate", ["Dashboard", "Classify", "Bulk Upload", "Review Queue", "Audit Trail"])
 
 if page == "Dashboard":
     st.title("HS & Shipment Pre-Check Dashboard")
 
-    session_items = st.session_state.get("review_items", [])
+    session_items = st.session_state["review_items"]
     session_total = len(session_items)
     session_pending = sum(1 for i in session_items if i["Status"] == "Pending review")
 
@@ -193,7 +201,8 @@ if page == "Dashboard":
     if session_items:
         risk_counts = {RISK_GREEN: 0, RISK_AMBER: 0, RISK_RED: 0}
         for i in session_items:
-            risk_counts[i["Risk"]] = risk_counts.get(i["Risk"], 0) + 1
+            risk = i["Risk"]
+            risk_counts[risk] = risk_counts.get(risk, 0) + 1
         risk_df = pd.DataFrame({"Risk": list(risk_counts.keys()), "Count": list(risk_counts.values())})
     else:
         st.caption("No classifications yet. Demo data shown below.")
@@ -228,8 +237,6 @@ elif page == "Classify":
                 }
                 st.session_state["last_result"] = entry
                 _add_to_review_queue(entry)
-                if "audit_log" not in st.session_state:
-                    st.session_state["audit_log"] = []
                 st.session_state["audit_log"].append({
                     "Timestamp": entry["timestamp"],
                     "Event": f'"{entry["description"]}" classified as {entry["uk_code"]} (risk: {entry["risk"]})',
@@ -301,18 +308,23 @@ elif page == "Bulk Upload":
             # Drop any pre-existing result columns to avoid duplicate columns after concat
             input_df = df.drop(columns=overlapping)
             try:
-                result_df = pd.concat(
-                    [input_df.reset_index(drop=True), input_df.apply(classify_row, axis=1)],
-                    axis=1,
-                )
+                with st.spinner(f"Classifying {len(input_df)} rows…"):
+                    result_df = pd.concat(
+                        [input_df.reset_index(drop=True), input_df.apply(classify_row, axis=1)],
+                        axis=1,
+                    )
             except Exception as e:
                 st.error(f"Classification failed: {e}")
                 st.stop()
 
-            error_count = (result_df["hs6"] == "ERROR").sum()
-            st.success(f"Processed {len(result_df)} rows" + (f" ({error_count} errors)" if error_count else ""))
-            if "audit_log" not in st.session_state:
-                st.session_state["audit_log"] = []
+            error_count = int((result_df["hs6"] == ERROR_CODE).sum())
+            unclassified_count = int((result_df["hs6"] == UNCLASSIFIED_CODE).sum())
+            parts = [f"Processed {len(result_df)} rows"]
+            if unclassified_count:
+                parts.append(f"{unclassified_count} unclassified")
+            if error_count:
+                parts.append(f"{error_count} errors")
+            st.success(" — ".join(parts))
             st.session_state["audit_log"].append({
                 "Timestamp": datetime.now().isoformat(timespec="microseconds"),
                 "Event": f"Bulk upload processed {len(result_df)} rows from '{uploaded.name}'" + (f" ({error_count} errors)" if error_count else ""),
@@ -329,9 +341,6 @@ elif page == "Bulk Upload":
 
 elif page == "Review Queue":
     st.title("Review Queue")
-
-    if "review_items" not in st.session_state:
-        st.session_state["review_items"] = []
 
     items = st.session_state["review_items"]
 
@@ -372,6 +381,6 @@ elif page == "Audit Trail":
         ]
     seed_logs = st.session_state["seed_logs"]
 
-    session_logs = st.session_state.get("audit_log", [])
+    session_logs = st.session_state["audit_log"]
     logs = pd.DataFrame(seed_logs + session_logs)
     st.dataframe(logs, use_container_width=True)
