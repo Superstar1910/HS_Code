@@ -131,18 +131,23 @@ def _safe_str(v) -> str:
 
 def classify_row(row):
     """Apply classify_product to a DataFrame row; safe for use with df.apply()."""
+    val_warning = ""
     try:
         val = float(row["value"])
     except (ValueError, TypeError):
         val = 0.0
+        val_warning = " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
     try:
-        return pd.Series(classify_product(
+        result = classify_product(
             _safe_str(row["description"]),
             _safe_str(row["material"]),
             _safe_str(row["origin"]),
             _safe_str(row["category"]),
             val,
-        ))
+        )
+        if val_warning:
+            result["explanation"] = result["explanation"] + val_warning
+        return pd.Series(result)
     except Exception as e:
         return pd.Series({
             "hs6": ERROR_CODE,
@@ -151,23 +156,29 @@ def classify_row(row):
             "risk": RISK_AMBER,
             "duty": "TBD",
             "vat": "TBD",
-            "explanation": f"Classification failed: {e}",
+            "explanation": f"Classification failed: {str(e)[:200]}",
         })
 
 
 def _add_to_review_queue(result: dict):
-    """Add a classified item to the review queue if not already present."""
-    key = (result["description"], result["timestamp"])
+    """Add a classified item to the review queue if not already present.
+
+    Deduplicates on (description, value, uk_code) so that re-clicking the
+    button for the same product does not create duplicate queue entries, but
+    a genuine reclassification that produces a different code is still added.
+    """
+    key = (result["description"], result.get("value", ""), result["uk_code"])
     if not any(
-        (item["_desc"], item["_ts"]) == key
+        (item["_desc"], item.get("_val", ""), item["_code"]) == key
         for item in st.session_state["review_items"]
     ):
         st.session_state["review_items"].append({
             "_desc": result["description"],
-            "_ts": result["timestamp"],
+            "_val": result.get("value", ""),
+            "_code": result["uk_code"],
             "Product": result["description"],
             "Suggested Code": result["uk_code"],
-            "Confidence": f'{round(result["confidence"] * 100)}%',
+            "Confidence": f'{int(round(result["confidence"] * 100))}%',
             "Risk": result["risk"],
             "Status": "Pending review",
         })
@@ -202,7 +213,8 @@ if page == "Dashboard":
         risk_counts = {RISK_GREEN: 0, RISK_AMBER: 0, RISK_RED: 0}
         for i in session_items:
             risk = i["Risk"]
-            risk_counts[risk] = risk_counts.get(risk, 0) + 1
+            if risk in risk_counts:
+                risk_counts[risk] += 1
         risk_df = pd.DataFrame({"Risk": list(risk_counts.keys()), "Count": list(risk_counts.values())})
     else:
         st.caption("No classifications yet. Demo data shown below.")
@@ -254,7 +266,7 @@ elif page == "Classify":
         a, b, c = st.columns(3)
         a.metric("HS6", r["hs6"])
         b.metric("UK Commodity Code", r["uk_code"])
-        c.metric("Confidence", f'{round(r["confidence"] * 100)}%')
+        c.metric("Confidence", f'{int(round(r["confidence"] * 100))}%')
 
         d, e, f = st.columns(3)
         d.metric("Risk", r["risk"])
@@ -307,6 +319,9 @@ elif page == "Bulk Upload":
                 st.warning(f"The following columns from your CSV will be overwritten by classification results: {', '.join(sorted(overlapping))}")
             # Drop any pre-existing result columns to avoid duplicate columns after concat
             input_df = df.drop(columns=overlapping)
+            if input_df.empty:
+                st.warning("The uploaded CSV contains no data rows.")
+                st.stop()
             try:
                 with st.spinner(f"Classifying {len(input_df)} rows…"):
                     result_df = pd.concat(
