@@ -1,4 +1,5 @@
 
+import math
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -21,6 +22,7 @@ ERROR_CODE = "ERROR"
 UNCLASSIFIED_CODE = "UNCLASSIFIED"
 
 
+@st.cache_data
 def classify_product(description, material, origin, category, value):
     desc = (description or "").strip().lower()
     material_lower = (material or "").strip().lower()
@@ -29,6 +31,7 @@ def classify_product(description, material, origin, category, value):
     # High-value items attract additional customs scrutiny
     # Round to pence to avoid floating-point edge cases near the threshold
     high_value = round(value, 2) >= HIGH_VALUE_THRESHOLD
+    hv_note = " High declared value flagged for additional customs scrutiny." if high_value else ""
 
     if ("scarf" in desc or "scarves" in desc) and "silk" in material_lower:
         return {
@@ -38,10 +41,7 @@ def classify_product(description, material, origin, category, value):
             "risk": RISK_RED if high_value else RISK_GREEN,
             "duty": "8%",
             "vat": "20%",
-            "explanation": (
-                "Classified under silk scarves based on material composition and accessory type."
-                + (" High declared value flagged for additional customs scrutiny." if high_value else "")
-            ),
+            "explanation": "Classified under silk scarves based on material composition and accessory type." + hv_note,
         }
     elif (
         "bag" in desc or "handbag" in desc or "purse" in desc
@@ -54,10 +54,7 @@ def classify_product(description, material, origin, category, value):
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "16%",
             "vat": "20%",
-            "explanation": (
-                "Classified under handbags with outer surface of leather."
-                + (" High declared value flagged for additional customs scrutiny." if high_value else "")
-            ),
+            "explanation": "Classified under handbags with outer surface of leather." + hv_note,
         }
     elif "perfume" in desc or "eau de parfum" in desc or category_lower == "beauty":
         return {
@@ -67,10 +64,7 @@ def classify_product(description, material, origin, category, value):
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "6.5%",
             "vat": "20%",
-            "explanation": (
-                "Classified under perfumes and toilet waters; regulated cosmetics handling required."
-                + (" High declared value flagged for additional customs scrutiny." if high_value else "")
-            ),
+            "explanation": "Classified under perfumes and toilet waters; regulated cosmetics handling required." + hv_note,
         }
     elif category_lower == "food" or any(
         w in desc for w in ("chocolate", "biscuit", "candy", "confection", "food", "snack")
@@ -83,8 +77,8 @@ def classify_product(description, material, origin, category, value):
             "duty": "varies",
             "vat": "20%",
             "explanation": (
-                "Classified under miscellaneous food preparations; phytosanitary and food safety checks required. Note: confectionery (chocolate, biscuits, candy) is standard-rated at 20% VAT in the UK."
-                + (" High declared value flagged for additional customs scrutiny." if high_value else "")
+                "Classified under miscellaneous food preparations; phytosanitary and food safety checks required."
+                " Note: confectionery (chocolate, biscuits, candy) is standard-rated at 20% VAT in the UK." + hv_note
             ),
         }
     elif category_lower == "fashion_accessories" or any(
@@ -97,23 +91,17 @@ def classify_product(description, material, origin, category, value):
             "risk": RISK_RED if high_value else RISK_GREEN,
             "duty": "12%",
             "vat": "20%",
-            "explanation": (
-                "Classified under other made-up clothing accessories; verify composition for precise subheading."
-                + (" High declared value flagged for additional customs scrutiny." if high_value else "")
-            ),
+            "explanation": "Classified under other made-up clothing accessories; verify composition for precise subheading." + hv_note,
         }
     else:
         return {
             "hs6": UNCLASSIFIED_CODE,
             "uk_code": UNCLASSIFIED_CODE,
-            "confidence": 0.52,
+            "confidence": 0.0,
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "TBD",
             "vat": "20%",
-            "explanation": (
-                "Insufficient structured data; manual review recommended."
-                + (" High declared value flagged for additional customs scrutiny." if high_value else "")
-            ),
+            "explanation": "Insufficient structured data; manual review recommended." + hv_note,
         }
 
 
@@ -134,6 +122,9 @@ def classify_row(row):
     val_warning = ""
     try:
         val = float(row["value"])
+        if math.isnan(val):
+            val = 0.0
+            val_warning = " Warning: declared value was missing; defaulted to £0 for risk assessment."
     except (ValueError, TypeError):
         val = 0.0
         val_warning = " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
@@ -156,7 +147,7 @@ def classify_row(row):
             "risk": RISK_AMBER,
             "duty": "TBD",
             "vat": "TBD",
-            "explanation": f"Classification failed: {str(e)[:200]}",
+            "explanation": f"Classification failed: {str(e)}",
         })
 
 
@@ -295,7 +286,7 @@ elif page == "Bulk Upload":
 
     if uploaded:
         try:
-            df = pd.read_csv(uploaded, nrows=5001)
+            df = pd.read_csv(uploaded, nrows=5001, encoding_errors="replace")
             df.columns = df.columns.str.strip().str.lower()
         except pd.errors.ParserError:
             st.error("CSV format is invalid — check that columns are comma-separated and the file is UTF-8 encoded.")
@@ -308,49 +299,51 @@ elif page == "Bulk Upload":
             st.error("CSV exceeds the 5,000-row limit. Split the file and re-upload.")
             st.stop()
 
+        if df.empty:
+            st.warning("The uploaded CSV contains no data rows.")
+            st.stop()
+
         required = {"description", "material", "origin", "category", "value"}
         missing = required - set(df.columns)
         if missing:
             st.error(f"Missing required columns: {', '.join(sorted(missing))}")
-        else:
-            # Warn if pre-existing result columns will be overwritten
-            overlapping = [c for c in RESULT_COLUMNS if c in df.columns]
-            if overlapping:
-                st.warning(f"The following columns from your CSV will be overwritten by classification results: {', '.join(sorted(overlapping))}")
-            # Drop any pre-existing result columns to avoid duplicate columns after concat
-            input_df = df.drop(columns=overlapping)
-            if input_df.empty:
-                st.warning("The uploaded CSV contains no data rows.")
-                st.stop()
-            try:
-                with st.spinner(f"Classifying {len(input_df)} rows…"):
-                    result_df = pd.concat(
-                        [input_df.reset_index(drop=True), input_df.apply(classify_row, axis=1)],
-                        axis=1,
-                    )
-            except Exception as e:
-                st.error(f"Classification failed: {e}")
-                st.stop()
+            st.stop()
 
-            error_count = int((result_df["hs6"] == ERROR_CODE).sum())
-            unclassified_count = int((result_df["hs6"] == UNCLASSIFIED_CODE).sum())
-            parts = [f"Processed {len(result_df)} rows"]
-            if unclassified_count:
-                parts.append(f"{unclassified_count} unclassified")
-            if error_count:
-                parts.append(f"{error_count} errors")
-            st.success(" — ".join(parts))
-            st.session_state["audit_log"].append({
-                "Timestamp": datetime.now().isoformat(timespec="microseconds"),
-                "Event": f"Bulk upload processed {len(result_df)} rows from '{uploaded.name}'" + (f" ({error_count} errors)" if error_count else ""),
-            })
-            st.dataframe(result_df, use_container_width=True)
-            st.download_button(
-                "Download Results CSV",
-                data=result_df.to_csv(index=False).encode("utf-8"),
-                file_name="hs_classification_results.csv",
-                mime="text/csv",
-            )
+        # Warn if pre-existing result columns will be overwritten
+        overlapping = [c for c in RESULT_COLUMNS if c in df.columns]
+        if overlapping:
+            st.warning(f"The following columns from your CSV will be overwritten by classification results: {', '.join(sorted(overlapping))}")
+        # Drop any pre-existing result columns to avoid duplicate columns after concat
+        input_df = df.drop(columns=overlapping)
+        try:
+            with st.spinner(f"Classifying {len(input_df)} rows…"):
+                result_df = pd.concat(
+                    [input_df.reset_index(drop=True), input_df.apply(classify_row, axis=1)],
+                    axis=1,
+                )
+        except Exception as e:
+            st.error(f"Classification failed: {e}")
+            st.stop()
+
+        error_count = int((result_df["hs6"] == ERROR_CODE).sum())
+        unclassified_count = int((result_df["hs6"] == UNCLASSIFIED_CODE).sum())
+        parts = [f"Processed {len(result_df)} rows"]
+        if unclassified_count:
+            parts.append(f"{unclassified_count} unclassified")
+        if error_count:
+            parts.append(f"{error_count} errors")
+        st.success(" — ".join(parts))
+        st.session_state["audit_log"].append({
+            "Timestamp": datetime.now().isoformat(timespec="microseconds"),
+            "Event": f"Bulk upload processed {len(result_df)} rows from '{uploaded.name}'" + (f" ({error_count} errors)" if error_count else ""),
+        })
+        st.dataframe(result_df, use_container_width=True)
+        st.download_button(
+            "Download Results CSV",
+            data=result_df.to_csv(index=False).encode("utf-8"),
+            file_name="hs_classification_results.csv",
+            mime="text/csv",
+        )
     else:
         st.caption("Use the sample CSV in the deployment bundle to test bulk processing.")
 
