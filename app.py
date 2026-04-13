@@ -125,7 +125,7 @@ def classify_row(row):
         if math.isnan(val):
             val = 0.0
             val_warning = " Warning: declared value was missing; defaulted to £0 for risk assessment."
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, KeyError):
         val = 0.0
         val_warning = " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
     try:
@@ -199,8 +199,8 @@ if page == "Dashboard":
 
     st.caption("Metrics reflect classifications performed in this session.")
 
-    st.subheader("Session Risk Distribution")
     if session_items:
+        st.subheader("Session Risk Distribution")
         risk_counts = {RISK_GREEN: 0, RISK_AMBER: 0, RISK_RED: 0}
         for i in session_items:
             risk = i["Risk"]
@@ -208,7 +208,8 @@ if page == "Dashboard":
                 risk_counts[risk] += 1
         risk_df = pd.DataFrame({"Risk": list(risk_counts.keys()), "Count": list(risk_counts.values())})
     else:
-        st.caption("No classifications yet. Demo data shown below.")
+        st.subheader("Session Risk Distribution (Demo)")
+        st.info("No classifications yet this session. The chart below shows illustrative demo data.")
         risk_df = pd.DataFrame({"Risk": ["GREEN", "AMBER", "RED"], "Count": [9710, 2140, 600]})
     st.bar_chart(risk_df.set_index("Risk"))
 
@@ -310,7 +311,7 @@ elif page == "Bulk Upload":
             st.stop()
 
         # Warn if pre-existing result columns will be overwritten
-        overlapping = [c for c in RESULT_COLUMNS if c in df.columns]
+        overlapping = [col for col in RESULT_COLUMNS if col in df.columns]
         if overlapping:
             st.warning(f"The following columns from your CSV will be overwritten by classification results: {', '.join(sorted(overlapping))}")
         # Drop any pre-existing result columns to avoid duplicate columns after concat
