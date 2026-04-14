@@ -275,6 +275,12 @@ elif page == "Classify":
             "country_of_origin": r["origin"],
             "category": r["category"],
             "value_gbp": r["value"],
+            "hs6": r["hs6"],
+            "uk_commodity_code": r["uk_code"],
+            "confidence": r["confidence"],
+            "risk": r["risk"],
+            "duty": r["duty"],
+            "vat": r["vat"],
             "decision_timestamp": r["timestamp"],
         })
 
@@ -289,6 +295,18 @@ elif page == "Bulk Upload":
         try:
             df = pd.read_csv(uploaded, nrows=5001, encoding_errors="replace")
             df.columns = df.columns.str.strip().str.lower()
+            # Warn if any string column contains the Unicode replacement character,
+            # which indicates bytes that could not be decoded from the file's encoding.
+            str_cols = df.select_dtypes(include="object").columns
+            if any(
+                df[col].astype(str).str.contains("\ufffd", regex=False).any()
+                for col in str_cols
+            ):
+                st.warning(
+                    "Some characters in the CSV could not be decoded and have been "
+                    "replaced with \ufffd. Re-save the file as UTF-8 to ensure accurate "
+                    "classification."
+                )
         except pd.errors.ParserError:
             st.error("CSV format is invalid — check that columns are comma-separated and the file is UTF-8 encoded.")
             st.stop()
@@ -362,16 +380,28 @@ elif page == "Review Queue":
         col1, col2 = st.columns(2)
 
         if col1.button("Approve All"):
+            ts = datetime.now().isoformat(timespec="microseconds")
+            count = len(items)
             st.session_state["review_items"] = [
                 {**item, "Status": "Approved"} for item in items
             ]
+            st.session_state["audit_log"].append({
+                "Timestamp": ts,
+                "Event": f"Review Queue: {count} item(s) approved in bulk",
+            })
             st.success("All items marked as approved.")
             st.rerun()
 
         if col2.button("Override All"):
+            ts = datetime.now().isoformat(timespec="microseconds")
+            count = len(items)
             st.session_state["review_items"] = [
                 {**item, "Status": "Overridden — pending analyst"} for item in items
             ]
+            st.session_state["audit_log"].append({
+                "Timestamp": ts,
+                "Event": f"Review Queue: {count} item(s) flagged for analyst override in bulk",
+            })
             st.warning("All items flagged for analyst override.")
             st.rerun()
     else:
