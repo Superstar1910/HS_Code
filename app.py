@@ -129,13 +129,13 @@ def classify_row(row):
         val = 0.0
         val_warning = " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
     try:
-        result = classify_product(
+        result = dict(classify_product(
             _safe_str(row["description"]),
             _safe_str(row["material"]),
             _safe_str(row["origin"]),
             _safe_str(row["category"]),
             val,
-        )
+        ))
         if val_warning:
             result["explanation"] = result["explanation"] + val_warning
         return pd.Series(result)
@@ -229,11 +229,14 @@ elif page == "Classify":
             if not description.strip():
                 st.warning("Please enter a product description before classifying.")
             else:
-                result = classify_product(description, material, origin, category, value)
+                desc_clean = description.strip()
+                mat_clean = material.strip()
+                orig_clean = origin.strip()
+                result = classify_product(desc_clean, mat_clean, orig_clean, category, value)
                 entry = {
-                    "description": description.strip(),
-                    "material": material.strip(),
-                    "origin": origin.strip(),
+                    "description": desc_clean,
+                    "material": mat_clean,
+                    "origin": orig_clean,
                     "category": category,
                     "value": value,
                     "timestamp": datetime.now().isoformat(timespec="microseconds"),
@@ -389,7 +392,7 @@ elif page == "Review Queue":
                 "Timestamp": ts,
                 "Event": f"Review Queue: {count} item(s) approved in bulk",
             })
-            st.success("All items marked as approved.")
+            st.toast("All items marked as approved.", icon="✅")
             st.rerun()
 
         if col2.button("Override All"):
@@ -402,7 +405,7 @@ elif page == "Review Queue":
                 "Timestamp": ts,
                 "Event": f"Review Queue: {count} item(s) flagged for analyst override in bulk",
             })
-            st.warning("All items flagged for analyst override.")
+            st.toast("All items flagged for analyst override.", icon="⚠️")
             st.rerun()
     else:
         st.info("No items in the review queue. Classify a product first or use Bulk Upload.")
@@ -421,5 +424,9 @@ elif page == "Audit Trail":
     seed_logs = st.session_state["seed_logs"]
 
     session_logs = st.session_state["audit_log"]
-    logs = pd.DataFrame(seed_logs + session_logs)
+    logs = (
+        pd.DataFrame(seed_logs + session_logs)
+        .sort_values("Timestamp")
+        .reset_index(drop=True)
+    )
     st.dataframe(logs, use_container_width=True)
