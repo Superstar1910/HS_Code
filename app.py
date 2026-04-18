@@ -129,13 +129,13 @@ def classify_row(row):
         val = 0.0
         val_warning = " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
     try:
-        result = dict(classify_product(
+        result = classify_product(
             _safe_str(row["description"]),
             _safe_str(row["material"]),
             _safe_str(row["origin"]),
             _safe_str(row["category"]),
             val,
-        ))
+        )
         if val_warning:
             result["explanation"] = result["explanation"] + val_warning
         return pd.Series(result)
@@ -169,7 +169,8 @@ def _add_to_review_queue(result: dict):
             "_code": result["uk_code"],
             "Product": result["description"],
             "Suggested Code": result["uk_code"],
-            "Confidence": f'{int(round(result["confidence"] * 100))}%',
+            "Confidence": f'{round(result["confidence"] * 100)}%',
+            "Explanation": result["explanation"],
             "Risk": result["risk"],
             "Status": "Pending review",
         })
@@ -261,7 +262,7 @@ elif page == "Classify":
         a, b, c = st.columns(3)
         a.metric("HS6", r["hs6"])
         b.metric("UK Commodity Code", r["uk_code"])
-        c.metric("Confidence", f'{int(round(r["confidence"] * 100))}%')
+        c.metric("Confidence", f'{round(r["confidence"] * 100)}%')
 
         d, e, f = st.columns(3)
         d.metric("Risk", r["risk"])
@@ -284,6 +285,7 @@ elif page == "Classify":
             "risk": r["risk"],
             "duty": r["duty"],
             "vat": r["vat"],
+            "explanation": r["explanation"],
             "decision_timestamp": r["timestamp"],
         })
 
@@ -375,7 +377,7 @@ elif page == "Review Queue":
     items = st.session_state["review_items"]
 
     if items:
-        display_cols = ["Product", "Suggested Code", "Confidence", "Risk", "Status"]
+        display_cols = ["Product", "Suggested Code", "Confidence", "Risk", "Status", "Explanation"]
         review_df = pd.DataFrame(items)[display_cols]
         st.dataframe(review_df, use_container_width=True)
 
