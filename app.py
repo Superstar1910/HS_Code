@@ -122,9 +122,9 @@ def classify_row(row):
     val_warning = ""
     try:
         val = float(row["value"])
-        if math.isnan(val):
+        if math.isnan(val) or math.isinf(val) or val < 0.0:
             val = 0.0
-            val_warning = " Warning: declared value was missing; defaulted to £0 for risk assessment."
+            val_warning = " Warning: declared value was missing or invalid; defaulted to £0 for risk assessment."
     except (ValueError, TypeError, KeyError):
         val = 0.0
         val_warning = " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
@@ -146,7 +146,7 @@ def classify_row(row):
             "confidence": 0.0,
             "risk": RISK_AMBER,
             "duty": "TBD",
-            "vat": "TBD",
+            "vat": "20%",
             "explanation": f"Classification failed: {str(e)}",
         })
 
