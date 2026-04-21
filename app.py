@@ -15,7 +15,7 @@ RISK_AMBER = "AMBER"
 RISK_RED = "RED"
 
 # Columns produced by classify_product — used to drop conflicts before bulk concat
-RESULT_COLUMNS = {"hs6", "uk_code", "confidence", "risk", "duty", "vat", "explanation"}
+RESULT_COLUMNS = frozenset({"hs6", "uk_code", "confidence", "risk", "duty", "vat", "explanation"})
 
 # Sentinel values used in result rows
 ERROR_CODE = "ERROR"
@@ -137,7 +137,7 @@ def classify_row(row):
             val,
         )
         if val_warning:
-            result["explanation"] = result["explanation"] + val_warning
+            result = {**result, "explanation": result["explanation"] + val_warning}
         return pd.Series(result)
     except Exception as e:
         return pd.Series({
@@ -191,12 +191,14 @@ if page == "Dashboard":
     session_items = st.session_state["review_items"]
     session_total = len(session_items)
     session_pending = sum(1 for i in session_items if i["Status"] == "Pending review")
+    session_approved = sum(1 for i in session_items if i["Status"] == "Approved")
+    session_overridden = sum(1 for i in session_items if "Overridden" in i["Status"])
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Session SKUs", session_total if session_total else "—")
     c2.metric("Pending Review", session_pending if session_total else "—")
-    c3.metric("Approved", sum(1 for i in session_items if i["Status"] == "Approved") if session_total else "—")
-    c4.metric("Overridden", sum(1 for i in session_items if "Overridden" in i["Status"]) if session_total else "—")
+    c3.metric("Approved", session_approved if session_total else "—")
+    c4.metric("Overridden", session_overridden if session_total else "—")
 
     st.caption("Metrics reflect classifications performed in this session.")
 
@@ -334,9 +336,9 @@ elif page == "Bulk Upload":
             st.stop()
 
         # Warn if pre-existing result columns will be overwritten
-        overlapping = [col for col in RESULT_COLUMNS if col in df.columns]
+        overlapping = sorted(col for col in RESULT_COLUMNS if col in df.columns)
         if overlapping:
-            st.warning(f"The following columns from your CSV will be overwritten by classification results: {', '.join(sorted(overlapping))}")
+            st.warning(f"The following columns from your CSV will be overwritten by classification results: {', '.join(overlapping)}")
         # Drop any pre-existing result columns to avoid duplicate columns after concat
         input_df = df.drop(columns=overlapping)
         try:
@@ -357,9 +359,10 @@ elif page == "Bulk Upload":
         if error_count:
             parts.append(f"{error_count} errors")
         st.success(" — ".join(parts))
+        error_suffix = f" ({error_count} errors)" if error_count else ""
         st.session_state["audit_log"].append({
             "Timestamp": datetime.now().isoformat(timespec="microseconds"),
-            "Event": f"Bulk upload processed {len(result_df)} rows from '{uploaded.name}'" + (f" ({error_count} errors)" if error_count else ""),
+            "Event": f"Bulk upload processed {len(result_df)} rows from '{uploaded.name}'{error_suffix}",
         })
         st.dataframe(result_df, use_container_width=True)
         st.download_button(
