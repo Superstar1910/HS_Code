@@ -122,7 +122,7 @@ def classify_row(row):
     val_warning = ""
     try:
         val = float(row["value"])
-        if math.isnan(val) or math.isinf(val) or val < 0.0:
+        if not math.isfinite(val) or val < 0.0:
             val = 0.0
             val_warning = " Warning: declared value was missing or invalid; defaulted to £0 for risk assessment."
     except (ValueError, TypeError, KeyError):
@@ -159,14 +159,9 @@ def _add_to_review_queue(result: dict):
     a genuine reclassification that produces a different code is still added.
     """
     key = (result["description"], result.get("value", ""), result["uk_code"])
-    if not any(
-        (item["_desc"], item.get("_val", ""), item["_code"]) == key
-        for item in st.session_state["review_items"]
-    ):
+    if key not in st.session_state["review_keys"]:
+        st.session_state["review_keys"].add(key)
         st.session_state["review_items"].append({
-            "_desc": result["description"],
-            "_val": result.get("value", ""),
-            "_code": result["uk_code"],
             "Product": result["description"],
             "Suggested Code": result["uk_code"],
             "Confidence": f'{round(result["confidence"] * 100)}%',
@@ -177,10 +172,10 @@ def _add_to_review_queue(result: dict):
 
 
 # Initialise session state keys once so all pages can rely on them existing
-if "review_items" not in st.session_state:
-    st.session_state["review_items"] = []
-if "audit_log" not in st.session_state:
-    st.session_state["audit_log"] = []
+st.session_state.setdefault("review_items", [])
+st.session_state.setdefault("review_keys", set())
+st.session_state.setdefault("audit_log", [])
+st.session_state.setdefault("bulk_result", None)
 
 st.sidebar.title("HS & Shipment Pre-Check")
 page = st.sidebar.radio("Navigate", ["Dashboard", "Classify", "Bulk Upload", "Review Queue", "Audit Trail"])
@@ -300,6 +295,7 @@ elif page == "Bulk Upload":
 
     if uploaded:
         try:
+            # Read one extra row so len(df) > 5000 can detect oversized files
             df = pd.read_csv(uploaded, nrows=5001, encoding_errors="replace")
             df.columns = df.columns.str.strip().str.lower()
             # Warn if any string column contains the Unicode replacement character,
@@ -358,20 +354,27 @@ elif page == "Bulk Upload":
             parts.append(f"{unclassified_count} unclassified")
         if error_count:
             parts.append(f"{error_count} errors")
-        st.success(" — ".join(parts))
-        error_suffix = f" ({error_count} errors)" if error_count else ""
         st.session_state["audit_log"].append({
             "Timestamp": datetime.now().isoformat(timespec="microseconds"),
-            "Event": f"Bulk upload processed {len(result_df)} rows from '{uploaded.name}'{error_suffix}",
+            "Event": f"Bulk upload processed {len(result_df)} rows from '{uploaded.name}'" + (f" ({error_count} errors)" if error_count else ""),
         })
-        st.dataframe(result_df, use_container_width=True)
+        st.session_state["bulk_result"] = {
+            "df": result_df,
+            "summary": " — ".join(parts),
+            "filename": uploaded.name,
+        }
+
+    bulk = st.session_state["bulk_result"]
+    if bulk is not None:
+        st.success(bulk["summary"])
+        st.dataframe(bulk["df"], use_container_width=True)
         st.download_button(
             "Download Results CSV",
-            data=result_df.to_csv(index=False).encode("utf-8"),
+            data=bulk["df"].to_csv(index=False).encode("utf-8"),
             file_name="hs_classification_results.csv",
             mime="text/csv",
         )
-    else:
+    elif not uploaded:
         st.caption("Use the sample CSV in the deployment bundle to test bulk processing.")
 
 elif page == "Review Queue":
