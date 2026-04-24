@@ -14,6 +14,11 @@ RISK_GREEN = "GREEN"
 RISK_AMBER = "AMBER"
 RISK_RED = "RED"
 
+# Review queue status values
+STATUS_PENDING = "Pending review"
+STATUS_APPROVED = "Approved"
+STATUS_OVERRIDDEN = "Overridden — pending analyst"
+
 # Columns produced by classify_product — used to drop conflicts before bulk concat
 RESULT_COLUMNS = frozenset({"hs6", "uk_code", "confidence", "risk", "duty", "vat", "explanation"})
 
@@ -167,7 +172,7 @@ def _add_to_review_queue(result: dict):
             "Confidence": f'{round(result["confidence"] * 100)}%',
             "Explanation": result["explanation"],
             "Risk": result["risk"],
-            "Status": "Pending review",
+            "Status": STATUS_PENDING,
         })
 
 
@@ -185,9 +190,15 @@ if page == "Dashboard":
 
     session_items = st.session_state["review_items"]
     session_total = len(session_items)
-    session_pending = sum(1 for i in session_items if i["Status"] == "Pending review")
-    session_approved = sum(1 for i in session_items if i["Status"] == "Approved")
-    session_overridden = sum(1 for i in session_items if "Overridden" in i["Status"])
+    session_pending = session_approved = session_overridden = 0
+    for _i in session_items:
+        s = _i["Status"]
+        if s == STATUS_PENDING:
+            session_pending += 1
+        elif s == STATUS_APPROVED:
+            session_approved += 1
+        elif s == STATUS_OVERRIDDEN:
+            session_overridden += 1
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Session SKUs", session_total if session_total else "—")
@@ -384,7 +395,7 @@ elif page == "Review Queue":
 
     if items:
         display_cols = ["Product", "Suggested Code", "Confidence", "Risk", "Status", "Explanation"]
-        review_df = pd.DataFrame(items)[display_cols]
+        review_df = pd.DataFrame(items, columns=display_cols)
         st.dataframe(review_df, use_container_width=True)
 
         st.write("**Manual review actions**")
@@ -394,7 +405,7 @@ elif page == "Review Queue":
             ts = datetime.now().isoformat(timespec="microseconds")
             count = len(items)
             st.session_state["review_items"] = [
-                {**item, "Status": "Approved"} for item in items
+                {**item, "Status": STATUS_APPROVED} for item in items
             ]
             st.session_state["audit_log"].append({
                 "Timestamp": ts,
@@ -407,7 +418,7 @@ elif page == "Review Queue":
             ts = datetime.now().isoformat(timespec="microseconds")
             count = len(items)
             st.session_state["review_items"] = [
-                {**item, "Status": "Overridden — pending analyst"} for item in items
+                {**item, "Status": STATUS_OVERRIDDEN} for item in items
             ]
             st.session_state["audit_log"].append({
                 "Timestamp": ts,
