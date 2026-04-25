@@ -1,5 +1,6 @@
 
 import math
+from collections import Counter
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -112,14 +113,12 @@ def classify_product(description, material, origin, category, value):
 
 def _safe_str(v) -> str:
     """Convert a value to string, returning empty string for NaN/None."""
-    if v is None:
-        return ""
     try:
         if pd.isna(v):
             return ""
     except (TypeError, ValueError):
         pass
-    return str(v)
+    return str(v) if v is not None else ""
 
 
 def classify_row(row):
@@ -163,7 +162,7 @@ def _add_to_review_queue(result: dict):
     button for the same product does not create duplicate queue entries, but
     a genuine reclassification that produces a different code is still added.
     """
-    key = (result["description"], result.get("value", ""), result["uk_code"])
+    key = (result["description"], result.get("value", 0.0), result["uk_code"])
     if key not in st.session_state["review_keys"]:
         st.session_state["review_keys"].add(key)
         st.session_state["review_items"].append({
@@ -190,15 +189,10 @@ if page == "Dashboard":
 
     session_items = st.session_state["review_items"]
     session_total = len(session_items)
-    session_pending = session_approved = session_overridden = 0
-    for _i in session_items:
-        s = _i["Status"]
-        if s == STATUS_PENDING:
-            session_pending += 1
-        elif s == STATUS_APPROVED:
-            session_approved += 1
-        elif s == STATUS_OVERRIDDEN:
-            session_overridden += 1
+    status_counts = Counter(i["Status"] for i in session_items)
+    session_pending = status_counts[STATUS_PENDING]
+    session_approved = status_counts[STATUS_APPROVED]
+    session_overridden = status_counts[STATUS_OVERRIDDEN]
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Session SKUs", session_total if session_total else "—")
@@ -360,18 +354,19 @@ elif page == "Bulk Upload":
 
         error_count = int((result_df["hs6"] == ERROR_CODE).sum())
         unclassified_count = int((result_df["hs6"] == UNCLASSIFIED_CODE).sum())
-        parts = [f"Processed {len(result_df)} rows"]
+        summary_parts = [f"Processed {len(result_df)} rows"]
         if unclassified_count:
-            parts.append(f"{unclassified_count} unclassified")
+            summary_parts.append(f"{unclassified_count} unclassified")
         if error_count:
-            parts.append(f"{error_count} errors")
+            summary_parts.append(f"{error_count} errors")
+        detail_suffix = f" ({', '.join(summary_parts[1:])})" if len(summary_parts) > 1 else ""
         st.session_state["audit_log"].append({
             "Timestamp": datetime.now().isoformat(timespec="microseconds"),
-            "Event": f"Bulk upload processed {len(result_df)} rows from '{uploaded.name}'" + (f" ({error_count} errors)" if error_count else ""),
+            "Event": f"Bulk upload processed {len(result_df)} rows from '{uploaded.name}'{detail_suffix}",
         })
         st.session_state["bulk_result"] = {
             "df": result_df,
-            "summary": " — ".join(parts),
+            "summary": " — ".join(summary_parts),
             "filename": uploaded.name,
         }
 
@@ -407,6 +402,7 @@ elif page == "Review Queue":
             st.session_state["review_items"] = [
                 {**item, "Status": STATUS_APPROVED} for item in items
             ]
+            st.session_state["review_keys"] = set()
             st.session_state["audit_log"].append({
                 "Timestamp": ts,
                 "Event": f"Review Queue: {count} item(s) approved in bulk",
@@ -420,6 +416,7 @@ elif page == "Review Queue":
             st.session_state["review_items"] = [
                 {**item, "Status": STATUS_OVERRIDDEN} for item in items
             ]
+            st.session_state["review_keys"] = set()
             st.session_state["audit_log"].append({
                 "Timestamp": ts,
                 "Event": f"Review Queue: {count} item(s) flagged for analyst override in bulk",
