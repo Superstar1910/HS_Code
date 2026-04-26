@@ -28,12 +28,19 @@ ERROR_CODE = "ERROR"
 UNCLASSIFIED_CODE = "UNCLASSIFIED"
 
 
-@st.cache_data
 def classify_product(description, material, origin, category, value):
-    desc = (description or "").strip().lower()
-    material_lower = (material or "").strip().lower()
-    category_lower = (category or "").strip().lower()
+    """Normalise inputs then delegate to the cached implementation."""
+    return _classify_product_cached(
+        (description or "").strip().lower(),
+        (material or "").strip().lower(),
+        origin,
+        (category or "").strip().lower(),
+        value,
+    )
 
+
+@st.cache_data
+def _classify_product_cached(desc, material_lower, origin, category_lower, value):
     # High-value items attract additional customs scrutiny
     # Round to pence to avoid floating-point edge cases near the threshold
     high_value = round(value, 2) >= HIGH_VALUE_THRESHOLD
@@ -204,11 +211,8 @@ if page == "Dashboard":
 
     if session_items:
         st.subheader("Session Risk Distribution")
-        risk_counts = {RISK_GREEN: 0, RISK_AMBER: 0, RISK_RED: 0}
-        for i in session_items:
-            risk = i["Risk"]
-            if risk in risk_counts:
-                risk_counts[risk] += 1
+        counted = Counter(i["Risk"] for i in session_items)
+        risk_counts = {RISK_GREEN: counted[RISK_GREEN], RISK_AMBER: counted[RISK_AMBER], RISK_RED: counted[RISK_RED]}
         risk_df = pd.DataFrame({"Risk": list(risk_counts.keys()), "Count": list(risk_counts.values())})
     else:
         st.subheader("Session Risk Distribution (Demo)")
