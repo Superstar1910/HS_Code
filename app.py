@@ -46,7 +46,7 @@ def _classify_product_cached(desc, material_lower, origin, category_lower, value
     high_value = round(value, 2) >= HIGH_VALUE_THRESHOLD
     hv_note = " High declared value flagged for additional customs scrutiny." if high_value else ""
 
-    if ("scarf" in desc or "scarves" in desc) and "silk" in material_lower:
+    if ("scarf" in desc or "scarves" in desc) and ("silk" in material_lower or "silk" in desc):
         return {
             "hs6": "621410",
             "uk_code": "6214100090",
@@ -59,7 +59,7 @@ def _classify_product_cached(desc, material_lower, origin, category_lower, value
     elif (
         "bag" in desc or "handbag" in desc or "purse" in desc
         or category_lower == "bags"
-    ) and "leather" in material_lower:
+    ) and ("leather" in material_lower or "leather" in desc):
         return {
             "hs6": "420221",
             "uk_code": "4202210000",
@@ -169,7 +169,7 @@ def _add_to_review_queue(result: dict):
     button for the same product does not create duplicate queue entries, but
     a genuine reclassification that produces a different code is still added.
     """
-    key = (result["description"], result.get("value", 0.0), result["uk_code"])
+    key = (result["description"], round(result.get("value", 0.0), 2), result["uk_code"])
     if key not in st.session_state["review_keys"]:
         st.session_state["review_keys"].add(key)
         st.session_state["review_items"].append({
@@ -327,7 +327,7 @@ elif page == "Bulk Upload":
             st.stop()
 
         if len(df) > 5000:
-            st.error("CSV exceeds the 5,000-row limit. Split the file and re-upload.")
+            st.error(f"CSV exceeds the 5,000-row limit (at least {len(df):,} rows found). Split the file and re-upload.")
             st.stop()
 
         if df.empty:
@@ -437,9 +437,9 @@ elif page == "Audit Trail":
     if "seed_logs" not in st.session_state:
         today = datetime.now().strftime("%Y-%m-%d")
         st.session_state["seed_logs"] = [
-            {"Timestamp": f"{today}T09:12:00", "Event": "SKU123 classified as 6214100090 by system"},
-            {"Timestamp": f"{today}T09:17:00", "Event": "Reviewed by compliance_officer_01"},
-            {"Timestamp": f"{today}T09:18:00", "Event": "Approved and published to product master"},
+            {"Timestamp": f"{today}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
+            {"Timestamp": f"{today}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
+            {"Timestamp": f"{today}T09:18:00.000000", "Event": "Approved and published to product master"},
         ]
     seed_logs = st.session_state["seed_logs"]
 
