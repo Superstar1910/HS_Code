@@ -33,14 +33,14 @@ def classify_product(description, material, origin, category, value):
     return _classify_product_cached(
         (description or "").strip().lower(),
         (material or "").strip().lower(),
-        origin,
+        (origin or "").strip().upper(),
         (category or "").strip().lower(),
         value,
     )
 
 
 @st.cache_data
-def _classify_product_cached(desc, material_lower, origin, category_lower, value):
+def _classify_product_cached(desc, material_lower, origin_upper, category_lower, value):
     # High-value items attract additional customs scrutiny
     # Round to pence to avoid floating-point edge cases near the threshold
     high_value = round(value, 2) >= HIGH_VALUE_THRESHOLD
