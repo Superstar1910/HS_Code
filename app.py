@@ -125,7 +125,7 @@ def _safe_str(v) -> str:
             return ""
     except (TypeError, ValueError):
         pass
-    return str(v) if v is not None else ""
+    return str(v)
 
 
 def classify_row(row):
@@ -374,6 +374,23 @@ elif page == "Bulk Upload":
             "filename": uploaded.name,
         }
 
+        for row in result_df.to_dict("records"):
+            if row.get("hs6") not in (ERROR_CODE, UNCLASSIFIED_CODE):
+                try:
+                    val = float(row.get("value", 0.0))
+                    if not math.isfinite(val) or val < 0.0:
+                        val = 0.0
+                except (ValueError, TypeError):
+                    val = 0.0
+                _add_to_review_queue({
+                    "description": str(row.get("description", "")),
+                    "value": val,
+                    "uk_code": str(row.get("uk_code", "")),
+                    "confidence": float(row.get("confidence", 0.0)),
+                    "explanation": str(row.get("explanation", "")),
+                    "risk": str(row.get("risk", RISK_AMBER)),
+                })
+
     bulk = st.session_state["bulk_result"]
     if bulk is not None:
         st.success(bulk["summary"])
@@ -406,7 +423,6 @@ elif page == "Review Queue":
             st.session_state["review_items"] = [
                 {**item, "Status": STATUS_APPROVED} for item in items
             ]
-            st.session_state["review_keys"] = set()
             st.session_state["audit_log"].append({
                 "Timestamp": ts,
                 "Event": f"Review Queue: {count} item(s) approved in bulk",
@@ -420,7 +436,6 @@ elif page == "Review Queue":
             st.session_state["review_items"] = [
                 {**item, "Status": STATUS_OVERRIDDEN} for item in items
             ]
-            st.session_state["review_keys"] = set()
             st.session_state["audit_log"].append({
                 "Timestamp": ts,
                 "Event": f"Review Queue: {count} item(s) flagged for analyst override in bulk",
