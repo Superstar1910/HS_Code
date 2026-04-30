@@ -187,6 +187,7 @@ st.session_state.setdefault("review_items", [])
 st.session_state.setdefault("review_keys", set())
 st.session_state.setdefault("audit_log", [])
 st.session_state.setdefault("bulk_result", None)
+st.session_state.setdefault("_bulk_file_id", None)
 
 st.sidebar.title("HS & Shipment Pre-Check")
 page = st.sidebar.radio("Navigate", ["Dashboard", "Classify", "Bulk Upload", "Review Queue", "Audit Trail"])
@@ -303,93 +304,99 @@ elif page == "Bulk Upload":
     )
 
     if uploaded:
-        try:
-            # Read one extra row so len(df) > 5000 can detect oversized files
-            df = pd.read_csv(uploaded, nrows=5001, encoding_errors="replace")
-            df.columns = df.columns.str.strip().str.lower()
-            # Warn if any string column contains the Unicode replacement character,
-            # which indicates bytes that could not be decoded from the file's encoding.
-            str_cols = df.select_dtypes(include="object").columns
-            if any(
-                df[col].astype(str).str.contains("\ufffd", regex=False).any()
-                for col in str_cols
-            ):
-                st.warning(
-                    "Some characters in the CSV could not be decoded and have been "
-                    "replaced with \ufffd. Re-save the file as UTF-8 to ensure accurate "
-                    "classification."
-                )
-        except pd.errors.ParserError:
-            st.error("CSV format is invalid — check that columns are comma-separated and the file is UTF-8 encoded.")
-            st.stop()
-        except Exception as e:
-            st.error(f"Failed to read file: {e}")
-            st.stop()
+        # Only re-process when the file actually changes; guards against
+        # re-classifying (and adding duplicate audit entries) on every rerun.
+        file_id = (uploaded.name, uploaded.size)
+        if st.session_state["_bulk_file_id"] != file_id:
+            try:
+                # Read one extra row so len(df) > 5000 can detect oversized files
+                df = pd.read_csv(uploaded, nrows=5001, encoding_errors="replace")
+                df.columns = df.columns.str.strip().str.lower()
+                # Warn if any string column contains the Unicode replacement character,
+                # which indicates bytes that could not be decoded from the file's encoding.
+                str_cols = df.select_dtypes(include="object").columns
+                if any(
+                    df[col].astype(str).str.contains("�", regex=False).any()
+                    for col in str_cols
+                ):
+                    st.warning(
+                        "Some characters in the CSV could not be decoded and have been "
+                        "replaced with �. Re-save the file as UTF-8 to ensure accurate "
+                        "classification."
+                    )
+            except pd.errors.ParserError:
+                st.error("CSV format is invalid — check that columns are comma-separated and the file is UTF-8 encoded.")
+                st.stop()
+            except Exception as e:
+                st.error(f"Failed to read file: {e}")
+                st.stop()
 
-        if len(df) > 5000:
-            st.error(f"CSV exceeds the 5,000-row limit (at least {len(df):,} rows found). Split the file and re-upload.")
-            st.stop()
+            if len(df) > 5000:
+                st.error(f"CSV exceeds the 5,000-row limit (at least {len(df):,} rows found). Split the file and re-upload.")
+                st.stop()
 
-        if df.empty:
-            st.warning("The uploaded CSV contains no data rows.")
-            st.stop()
+            if df.empty:
+                st.warning("The uploaded CSV contains no data rows.")
+                st.stop()
 
-        required = {"description", "material", "origin", "category", "value"}
-        missing = required - set(df.columns)
-        if missing:
-            st.error(f"Missing required columns: {', '.join(sorted(missing))}")
-            st.stop()
+            required = {"description", "material", "origin", "category", "value"}
+            missing = required - set(df.columns)
+            if missing:
+                st.error(f"Missing required columns: {', '.join(sorted(missing))}")
+                st.stop()
 
-        # Warn if pre-existing result columns will be overwritten
-        overlapping = sorted(col for col in RESULT_COLUMNS if col in df.columns)
-        if overlapping:
-            st.warning(f"The following columns from your CSV will be overwritten by classification results: {', '.join(overlapping)}")
-        # Drop any pre-existing result columns to avoid duplicate columns after concat
-        input_df = df.drop(columns=overlapping)
-        try:
-            with st.spinner(f"Classifying {len(input_df)} rows…"):
-                result_df = pd.concat(
-                    [input_df.reset_index(drop=True), input_df.apply(classify_row, axis=1)],
-                    axis=1,
-                )
-        except Exception as e:
-            st.error(f"Classification failed: {e}")
-            st.stop()
+            # Warn if pre-existing result columns will be overwritten
+            overlapping = sorted(col for col in RESULT_COLUMNS if col in df.columns)
+            if overlapping:
+                st.warning(f"The following columns from your CSV will be overwritten by classification results: {', '.join(overlapping)}")
+            # Drop any pre-existing result columns to avoid duplicate columns after concat
+            input_df = df.drop(columns=overlapping)
+            try:
+                with st.spinner(f"Classifying {len(input_df)} rows…"):
+                    result_df = pd.concat(
+                        [input_df.reset_index(drop=True), input_df.apply(classify_row, axis=1)],
+                        axis=1,
+                    )
+            except Exception as e:
+                st.error(f"Classification failed: {e}")
+                st.stop()
 
-        error_count = int((result_df["hs6"] == ERROR_CODE).sum())
-        unclassified_count = int((result_df["hs6"] == UNCLASSIFIED_CODE).sum())
-        summary_parts = [f"Processed {len(result_df)} rows"]
-        if unclassified_count:
-            summary_parts.append(f"{unclassified_count} unclassified")
-        if error_count:
-            summary_parts.append(f"{error_count} errors")
-        detail_suffix = f" ({', '.join(summary_parts[1:])})" if len(summary_parts) > 1 else ""
-        st.session_state["audit_log"].append({
-            "Timestamp": datetime.now().isoformat(timespec="microseconds"),
-            "Event": f"Bulk upload processed {len(result_df)} rows from '{uploaded.name}'{detail_suffix}",
-        })
-        st.session_state["bulk_result"] = {
-            "df": result_df,
-            "summary": " — ".join(summary_parts),
-            "filename": uploaded.name,
-        }
+            error_count = int((result_df["hs6"] == ERROR_CODE).sum())
+            unclassified_count = int((result_df["hs6"] == UNCLASSIFIED_CODE).sum())
+            summary_parts = [f"Processed {len(result_df)} rows"]
+            if unclassified_count:
+                summary_parts.append(f"{unclassified_count} unclassified")
+            if error_count:
+                summary_parts.append(f"{error_count} errors")
+            detail_suffix = f" ({', '.join(summary_parts[1:])})" if len(summary_parts) > 1 else ""
+            st.session_state["audit_log"].append({
+                "Timestamp": datetime.now().isoformat(timespec="microseconds"),
+                "Event": f"Bulk upload processed {len(result_df)} rows from '{uploaded.name}'{detail_suffix}",
+            })
+            st.session_state["bulk_result"] = {
+                "df": result_df,
+                "summary": " — ".join(summary_parts),
+                "filename": uploaded.name,
+            }
 
-        for row in result_df.to_dict("records"):
-            if row.get("hs6") not in (ERROR_CODE, UNCLASSIFIED_CODE):
-                try:
-                    val = float(row.get("value", 0.0))
-                    if not math.isfinite(val) or val < 0.0:
+            for row in result_df.to_dict("records"):
+                if row.get("hs6") not in (ERROR_CODE, UNCLASSIFIED_CODE):
+                    try:
+                        val = float(row.get("value", 0.0))
+                        if not math.isfinite(val) or val < 0.0:
+                            val = 0.0
+                    except (ValueError, TypeError):
                         val = 0.0
-                except (ValueError, TypeError):
-                    val = 0.0
-                _add_to_review_queue({
-                    "description": str(row.get("description", "")),
-                    "value": val,
-                    "uk_code": str(row.get("uk_code", "")),
-                    "confidence": float(row.get("confidence", 0.0)),
-                    "explanation": str(row.get("explanation", "")),
-                    "risk": str(row.get("risk", RISK_AMBER)),
-                })
+                    _add_to_review_queue({
+                        "description": str(row.get("description", "")),
+                        "value": val,
+                        "uk_code": str(row.get("uk_code", "")),
+                        "confidence": float(row.get("confidence", 0.0)),
+                        "explanation": str(row.get("explanation", "")),
+                        "risk": str(row.get("risk", RISK_AMBER)),
+                    })
+
+            st.session_state["_bulk_file_id"] = file_id
 
     bulk = st.session_state["bulk_result"]
     if bulk is not None:
