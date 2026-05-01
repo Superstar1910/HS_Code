@@ -158,7 +158,7 @@ def classify_row(row):
             "risk": RISK_AMBER,
             "duty": "TBD",
             "vat": "20%",
-            "explanation": f"Classification failed: {str(e)}",
+            "explanation": f"Classification failed: {str(e)[:200]}",
         })
 
 
@@ -310,7 +310,7 @@ elif page == "Bulk Upload":
         if st.session_state["_bulk_file_id"] != file_id:
             try:
                 # Read one extra row so len(df) > 5000 can detect oversized files
-                df = pd.read_csv(uploaded, nrows=5001, encoding_errors="replace")
+                df = pd.read_csv(uploaded, nrows=5001, encoding="utf-8-sig", encoding_errors="replace")
                 df.columns = df.columns.str.strip().str.lower()
                 # Warn if any string column contains the Unicode replacement character,
                 # which indicates bytes that could not be decoded from the file's encoding.
@@ -350,11 +350,11 @@ elif page == "Bulk Upload":
             if overlapping:
                 st.warning(f"The following columns from your CSV will be overwritten by classification results: {', '.join(overlapping)}")
             # Drop any pre-existing result columns to avoid duplicate columns after concat
-            input_df = df.drop(columns=overlapping)
+            input_df = df.drop(columns=overlapping).reset_index(drop=True)
             try:
                 with st.spinner(f"Classifying {len(input_df)} rows…"):
                     result_df = pd.concat(
-                        [input_df.reset_index(drop=True), input_df.apply(classify_row, axis=1)],
+                        [input_df, input_df.apply(classify_row, axis=1)],
                         axis=1,
                     )
             except Exception as e:
