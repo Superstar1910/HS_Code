@@ -57,7 +57,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "explanation": "Classified under silk scarves based on material composition and accessory type." + hv_note,
         }
     elif (
-        "bag" in desc or "handbag" in desc or "purse" in desc
+        "bag" in desc or "purse" in desc
         or category_lower == "bags"
     ) and ("leather" in material_lower or "leather" in desc):
         return {
@@ -141,10 +141,10 @@ def classify_row(row):
         val_warning = " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
     try:
         result = classify_product(
-            _safe_str(row["description"]),
-            _safe_str(row["material"]),
-            _safe_str(row["origin"]),
-            _safe_str(row["category"]),
+            _safe_str(row.get("description", "")),
+            _safe_str(row.get("material", "")),
+            _safe_str(row.get("origin", "")),
+            _safe_str(row.get("category", "")),
             val,
         )
         if val_warning:
@@ -169,7 +169,12 @@ def _add_to_review_queue(result: dict):
     button for the same product does not create duplicate queue entries, but
     a genuine reclassification that produces a different code is still added.
     """
-    key = (result["description"], round(result.get("value", 0.0), 2), result["uk_code"])
+    raw_val = result.get("value", 0.0)
+    try:
+        safe_val = round(float(raw_val), 2) if math.isfinite(float(raw_val)) else 0.0
+    except (TypeError, ValueError):
+        safe_val = 0.0
+    key = (result["description"], safe_val, result["uk_code"])
     if key not in st.session_state["review_keys"]:
         st.session_state["review_keys"].add(key)
         st.session_state["review_items"].append({
@@ -306,7 +311,7 @@ elif page == "Bulk Upload":
     if uploaded:
         # Only re-process when the file actually changes; guards against
         # re-classifying (and adding duplicate audit entries) on every rerun.
-        file_id = (uploaded.name, uploaded.size)
+        file_id = uploaded.file_id
         if st.session_state["_bulk_file_id"] != file_id:
             try:
                 # Read one extra row so len(df) > 5000 can detect oversized files
