@@ -30,12 +30,16 @@ UNCLASSIFIED_CODE = "UNCLASSIFIED"
 
 def classify_product(description, material, origin, category, value):
     """Normalise inputs then delegate to the cached implementation."""
+    try:
+        value_f = float(value)
+    except (TypeError, ValueError):
+        value_f = 0.0
     return _classify_product_cached(
         (description or "").strip().lower(),
         (material or "").strip().lower(),
         (origin or "").strip().upper(),
         (category or "").strip().lower(),
-        value,
+        value_f,
     )
 
 
@@ -43,7 +47,7 @@ def classify_product(description, material, origin, category, value):
 def _classify_product_cached(desc, material_lower, origin_upper, category_lower, value):
     # High-value items attract additional customs scrutiny
     # Round to pence to avoid floating-point edge cases near the threshold
-    high_value = round(value, 2) >= HIGH_VALUE_THRESHOLD
+    high_value = math.isfinite(value) and round(value, 2) >= HIGH_VALUE_THRESHOLD
     hv_note = " High declared value flagged for additional customs scrutiny." if high_value else ""
 
     if ("scarf" in desc or "scarves" in desc) and ("silk" in material_lower or "silk" in desc):
@@ -171,7 +175,8 @@ def _add_to_review_queue(result: dict):
     """
     raw_val = result.get("value", 0.0)
     try:
-        safe_val = round(float(raw_val), 2) if math.isfinite(float(raw_val)) else 0.0
+        raw_f = float(raw_val)
+        safe_val = round(raw_f, 2) if math.isfinite(raw_f) else 0.0
     except (TypeError, ValueError):
         safe_val = 0.0
     key = (result["description"], safe_val, result["uk_code"])
@@ -218,8 +223,10 @@ if page == "Dashboard":
     if session_items:
         st.subheader("Session Risk Distribution")
         counted = Counter(i["Risk"] for i in session_items)
-        risk_counts = {RISK_GREEN: counted[RISK_GREEN], RISK_AMBER: counted[RISK_AMBER], RISK_RED: counted[RISK_RED]}
-        risk_df = pd.DataFrame({"Risk": list(risk_counts.keys()), "Count": list(risk_counts.values())})
+        risk_df = pd.DataFrame(
+            {"Risk": [RISK_GREEN, RISK_AMBER, RISK_RED],
+             "Count": [counted[RISK_GREEN], counted[RISK_AMBER], counted[RISK_RED]]},
+        )
     else:
         st.subheader("Session Risk Distribution (Demo)")
         st.info("No classifications yet this session. The chart below shows illustrative demo data.")
@@ -319,7 +326,7 @@ elif page == "Bulk Upload":
                 df.columns = df.columns.str.strip().str.lower()
                 # Warn if any string column contains the Unicode replacement character,
                 # which indicates bytes that could not be decoded from the file's encoding.
-                str_cols = df.select_dtypes(include="object").columns
+                str_cols = df.select_dtypes(include=["object"]).columns
                 if any(
                     df[col].astype(str).str.contains("�", regex=False).any()
                     for col in str_cols
@@ -368,19 +375,21 @@ elif page == "Bulk Upload":
 
             error_count = int((result_df["hs6"] == ERROR_CODE).sum())
             unclassified_count = int((result_df["hs6"] == UNCLASSIFIED_CODE).sum())
-            summary_parts = [f"Processed {len(result_df)} rows"]
+            detail_parts = []
             if unclassified_count:
-                summary_parts.append(f"{unclassified_count} unclassified")
+                detail_parts.append(f"{unclassified_count} unclassified")
             if error_count:
-                summary_parts.append(f"{error_count} errors")
-            detail_suffix = f" ({', '.join(summary_parts[1:])})" if len(summary_parts) > 1 else ""
+                detail_parts.append(f"{error_count} errors")
+            summary = f"Processed {len(result_df)} rows"
+            if detail_parts:
+                summary += f" ({', '.join(detail_parts)})"
             st.session_state["audit_log"].append({
                 "Timestamp": datetime.now().isoformat(timespec="microseconds"),
-                "Event": f"Bulk upload processed {len(result_df)} rows from '{uploaded.name}'{detail_suffix}",
+                "Event": f"Bulk upload: {summary} from '{uploaded.name}'",
             })
             st.session_state["bulk_result"] = {
                 "df": result_df,
-                "summary": " — ".join(summary_parts),
+                "summary": summary,
                 "filename": uploaded.name,
             }
 
