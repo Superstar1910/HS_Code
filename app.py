@@ -1,4 +1,3 @@
-
 import math
 from collections import Counter
 import streamlit as st
@@ -28,26 +27,32 @@ ERROR_CODE = "ERROR"
 UNCLASSIFIED_CODE = "UNCLASSIFIED"
 
 
+def _normalise_value(value) -> float:
+    """Convert value to a finite, non-negative float rounded to pence."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(v) or v < 0.0:
+        return 0.0
+    return round(v, 2)
+
+
 def classify_product(description, material, origin, category, value):
     """Normalise inputs then delegate to the cached implementation."""
-    try:
-        value_f = float(value)
-    except (TypeError, ValueError):
-        value_f = 0.0
     return _classify_product_cached(
         (description or "").strip().lower(),
         (material or "").strip().lower(),
         (origin or "").strip().upper(),
         (category or "").strip().lower(),
-        value_f,
+        _normalise_value(value),
     )
 
 
 @st.cache_data
 def _classify_product_cached(desc, material_lower, origin_upper, category_lower, value):
-    # High-value items attract additional customs scrutiny
-    # Round to pence to avoid floating-point edge cases near the threshold
-    high_value = math.isfinite(value) and round(value, 2) >= HIGH_VALUE_THRESHOLD
+    # value is already rounded to pence and guaranteed finite by _normalise_value
+    high_value = value >= HIGH_VALUE_THRESHOLD
     hv_note = " High declared value flagged for additional customs scrutiny." if high_value else ""
 
     if ("scarf" in desc or "scarves" in desc) and ("silk" in material_lower or "silk" in desc):
@@ -84,7 +89,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "explanation": "Classified under perfumes and toilet waters; regulated cosmetics handling required." + hv_note,
         }
     elif category_lower == "food" or any(
-        w in desc for w in ("chocolate", "biscuit", "candy", "confection", "food", "snack")
+        w in desc for w in ("chocolate", "biscuit", "candy", "confection", "snack")
     ):
         return {
             "hs6": "210690",
@@ -134,15 +139,16 @@ def _safe_str(v) -> str:
 
 def classify_row(row):
     """Apply classify_product to a DataFrame row; safe for use with df.apply()."""
+    raw_val = row.get("value")
+    val = _normalise_value(raw_val)
     val_warning = ""
-    try:
-        val = float(row["value"])
-        if not math.isfinite(val) or val < 0.0:
-            val = 0.0
-            val_warning = " Warning: declared value was missing or invalid; defaulted to £0 for risk assessment."
-    except (ValueError, TypeError, KeyError):
-        val = 0.0
-        val_warning = " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
+    if raw_val is not None and val == 0.0:
+        try:
+            parsed = float(raw_val)
+            if not math.isfinite(parsed) or parsed < 0.0:
+                val_warning = " Warning: declared value was missing or invalid; defaulted to £0 for risk assessment."
+        except (ValueError, TypeError):
+            val_warning = " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
     try:
         result = classify_product(
             _safe_str(row.get("description", "")),
@@ -173,12 +179,7 @@ def _add_to_review_queue(result: dict):
     button for the same product does not create duplicate queue entries, but
     a genuine reclassification that produces a different code is still added.
     """
-    raw_val = result.get("value", 0.0)
-    try:
-        raw_f = float(raw_val)
-        safe_val = round(raw_f, 2) if math.isfinite(raw_f) else 0.0
-    except (TypeError, ValueError):
-        safe_val = 0.0
+    safe_val = _normalise_value(result.get("value", 0.0))
     key = (result["description"], safe_val, result["uk_code"])
     if key not in st.session_state["review_keys"]:
         st.session_state["review_keys"].add(key)
@@ -324,13 +325,12 @@ elif page == "Bulk Upload":
                 # Read one extra row so len(df) > 5000 can detect oversized files
                 df = pd.read_csv(uploaded, nrows=5001, encoding="utf-8-sig", encoding_errors="replace")
                 df.columns = df.columns.str.strip().str.lower()
-                # Warn if any string column contains the Unicode replacement character,
+                # Warn if any cell contains the Unicode replacement character,
                 # which indicates bytes that could not be decoded from the file's encoding.
-                str_cols = df.select_dtypes(include=["object"]).columns
-                if any(
-                    df[col].astype(str).str.contains("�", regex=False).any()
-                    for col in str_cols
-                ):
+                str_cols = df.select_dtypes(include=["object"])
+                if not str_cols.empty and str_cols.apply(
+                    lambda col: col.astype(str).str.contains("�", regex=False).any()
+                ).any():
                     st.warning(
                         "Some characters in the CSV could not be decoded and have been "
                         "replaced with �. Re-save the file as UTF-8 to ensure accurate "
@@ -395,17 +395,18 @@ elif page == "Bulk Upload":
 
             for row in result_df.to_dict("records"):
                 if row.get("hs6") not in (ERROR_CODE, UNCLASSIFIED_CODE):
+                    raw_conf = row.get("confidence", 0.0)
                     try:
-                        val = float(row.get("value", 0.0))
-                        if not math.isfinite(val) or val < 0.0:
-                            val = 0.0
+                        conf = float(raw_conf)
+                        if not math.isfinite(conf):
+                            conf = 0.0
                     except (ValueError, TypeError):
-                        val = 0.0
+                        conf = 0.0
                     _add_to_review_queue({
                         "description": str(row.get("description", "")),
-                        "value": val,
+                        "value": _normalise_value(row.get("value", 0.0)),
                         "uk_code": str(row.get("uk_code", "")),
-                        "confidence": float(row.get("confidence", 0.0)),
+                        "confidence": conf,
                         "explanation": str(row.get("explanation", "")),
                         "risk": str(row.get("risk", RISK_AMBER)),
                     })
