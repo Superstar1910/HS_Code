@@ -142,13 +142,16 @@ def classify_row(row):
     raw_val = row.get("value")
     val = _normalise_value(raw_val)
     val_warning = ""
-    if raw_val is not None and val == 0.0:
-        try:
-            parsed = float(raw_val)
-            if not math.isfinite(parsed) or parsed < 0.0:
-                val_warning = " Warning: declared value was missing or invalid; defaulted to £0 for risk assessment."
-        except (ValueError, TypeError):
-            val_warning = " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
+    if val == 0.0:
+        if raw_val is None:
+            val_warning = " Warning: declared value was missing; defaulted to £0 for risk assessment."
+        else:
+            try:
+                parsed = float(raw_val)
+                if not math.isfinite(parsed) or parsed < 0.0:
+                    val_warning = " Warning: declared value was missing or invalid; defaulted to £0 for risk assessment."
+            except (ValueError, TypeError):
+                val_warning = " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
     try:
         result = classify_product(
             _safe_str(row.get("description", "")),
@@ -186,7 +189,7 @@ def _add_to_review_queue(result: dict):
         st.session_state["review_items"].append({
             "Product": result["description"],
             "Suggested Code": result["uk_code"],
-            "Confidence": f'{round(result["confidence"] * 100)}%',
+            "Confidence": f'{min(100, max(0, round(result["confidence"] * 100)))}%',
             "Explanation": result["explanation"],
             "Risk": result["risk"],
             "Status": STATUS_PENDING,
@@ -199,6 +202,7 @@ st.session_state.setdefault("review_keys", set())
 st.session_state.setdefault("audit_log", [])
 st.session_state.setdefault("bulk_result", None)
 st.session_state.setdefault("_bulk_file_id", None)
+st.session_state.setdefault("last_result", None)
 
 st.sidebar.title("HS & Shipment Pre-Check")
 page = st.sidebar.radio("Navigate", ["Dashboard", "Classify", "Bulk Upload", "Review Queue", "Audit Trail"])
@@ -276,7 +280,7 @@ elif page == "Classify":
             "Detect missing data, improve descriptions, and reduce shipment rejection risk."
         )
 
-    if "last_result" in st.session_state:
+    if st.session_state["last_result"] is not None:
         r = st.session_state["last_result"]
         st.subheader("Classification Result")
         a, b, c = st.columns(3)
@@ -398,8 +402,7 @@ elif page == "Bulk Upload":
                     raw_conf = row.get("confidence", 0.0)
                     try:
                         conf = float(raw_conf)
-                        if not math.isfinite(conf):
-                            conf = 0.0
+                        conf = max(0.0, min(1.0, conf)) if math.isfinite(conf) else 0.0
                     except (ValueError, TypeError):
                         conf = 0.0
                     _add_to_review_queue({
