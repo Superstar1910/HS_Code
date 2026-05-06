@@ -54,6 +54,11 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     # value is already rounded to pence and guaranteed finite by _normalise_value
     high_value = value >= HIGH_VALUE_THRESHOLD
     hv_note = " High declared value flagged for additional customs scrutiny." if high_value else ""
+    origin_note = (
+        f" Country of origin: {origin_upper}."
+        if origin_upper
+        else " Warning: country of origin not declared — required for customs clearance."
+    )
 
     if ("scarf" in desc or "scarves" in desc) and ("silk" in material_lower or "silk" in desc):
         return {
@@ -63,7 +68,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "risk": RISK_RED if high_value else RISK_GREEN,
             "duty": "8%",
             "vat": "20%",
-            "explanation": "Classified under silk scarves based on material composition and accessory type." + hv_note,
+            "explanation": "Classified under silk scarves based on material composition and accessory type." + origin_note + hv_note,
         }
     elif (
         "bag" in desc or "purse" in desc
@@ -76,7 +81,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "16%",
             "vat": "20%",
-            "explanation": "Classified under handbags with outer surface of leather." + hv_note,
+            "explanation": "Classified under handbags with outer surface of leather." + origin_note + hv_note,
         }
     elif "perfume" in desc or "eau de parfum" in desc or category_lower == "beauty":
         return {
@@ -86,7 +91,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "6.5%",
             "vat": "20%",
-            "explanation": "Classified under perfumes and toilet waters; regulated cosmetics handling required." + hv_note,
+            "explanation": "Classified under perfumes and toilet waters; regulated cosmetics handling required." + origin_note + hv_note,
         }
     elif category_lower == "food" or any(
         w in desc for w in ("chocolate", "biscuit", "candy", "confection", "snack")
@@ -100,7 +105,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "vat": "20%",
             "explanation": (
                 "Classified under miscellaneous food preparations; phytosanitary and food safety checks required."
-                " Note: confectionery (chocolate, biscuits, candy) is standard-rated at 20% VAT in the UK." + hv_note
+                " Note: confectionery (chocolate, biscuits, candy) is standard-rated at 20% VAT in the UK." + origin_note + hv_note
             ),
         }
     elif category_lower == "fashion_accessories" or any(
@@ -113,7 +118,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "risk": RISK_RED if high_value else RISK_GREEN,
             "duty": "12%",
             "vat": "20%",
-            "explanation": "Classified under other made-up clothing accessories; verify composition for precise subheading." + hv_note,
+            "explanation": "Classified under other made-up clothing accessories; verify composition for precise subheading." + origin_note + hv_note,
         }
     else:
         return {
@@ -123,7 +128,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "TBD",
             "vat": "20%",
-            "explanation": "Insufficient structured data; manual review recommended." + hv_note,
+            "explanation": "Insufficient structured data; manual review recommended." + origin_note + hv_note,
         }
 
 
@@ -286,7 +291,7 @@ elif page == "Classify":
         a, b, c = st.columns(3)
         a.metric("HS6", r["hs6"])
         b.metric("UK Commodity Code", r["uk_code"])
-        c.metric("Confidence", f'{round(r["confidence"] * 100)}%')
+        c.metric("Confidence", f'{min(100, max(0, round(r["confidence"] * 100)))}%')
 
         d, e, f = st.columns(3)
         d.metric("Risk", r["risk"])
@@ -399,17 +404,11 @@ elif page == "Bulk Upload":
 
             for row in result_df.to_dict("records"):
                 if row.get("hs6") not in (ERROR_CODE, UNCLASSIFIED_CODE):
-                    raw_conf = row.get("confidence", 0.0)
-                    try:
-                        conf = float(raw_conf)
-                        conf = max(0.0, min(1.0, conf)) if math.isfinite(conf) else 0.0
-                    except (ValueError, TypeError):
-                        conf = 0.0
                     _add_to_review_queue({
                         "description": str(row.get("description", "")),
-                        "value": _normalise_value(row.get("value", 0.0)),
+                        "value": row.get("value", 0.0),
                         "uk_code": str(row.get("uk_code", "")),
-                        "confidence": conf,
+                        "confidence": row.get("confidence", 0.0),
                         "explanation": str(row.get("explanation", "")),
                         "risk": str(row.get("risk", RISK_AMBER)),
                     })
@@ -444,28 +443,30 @@ elif page == "Review Queue":
 
         if col1.button("Approve All"):
             ts = datetime.now().isoformat(timespec="microseconds")
-            count = len(items)
+            count = sum(1 for item in items if item["Status"] == STATUS_PENDING)
             st.session_state["review_items"] = [
-                {**item, "Status": STATUS_APPROVED} for item in items
+                {**item, "Status": STATUS_APPROVED} if item["Status"] == STATUS_PENDING else item
+                for item in items
             ]
             st.session_state["audit_log"].append({
                 "Timestamp": ts,
-                "Event": f"Review Queue: {count} item(s) approved in bulk",
+                "Event": f"Review Queue: {count} pending item(s) approved in bulk",
             })
-            st.toast("All items marked as approved.", icon="✅")
+            st.toast(f"{count} pending item(s) marked as approved.", icon="✅")
             st.rerun()
 
         if col2.button("Override All"):
             ts = datetime.now().isoformat(timespec="microseconds")
-            count = len(items)
+            count = sum(1 for item in items if item["Status"] == STATUS_PENDING)
             st.session_state["review_items"] = [
-                {**item, "Status": STATUS_OVERRIDDEN} for item in items
+                {**item, "Status": STATUS_OVERRIDDEN} if item["Status"] == STATUS_PENDING else item
+                for item in items
             ]
             st.session_state["audit_log"].append({
                 "Timestamp": ts,
-                "Event": f"Review Queue: {count} item(s) flagged for analyst override in bulk",
+                "Event": f"Review Queue: {count} pending item(s) flagged for analyst override in bulk",
             })
-            st.toast("All items flagged for analyst override.", icon="⚠️")
+            st.toast(f"{count} pending item(s) flagged for analyst override.", icon="⚠️")
             st.rerun()
     else:
         st.info("No items in the review queue. Classify a product first or use Bulk Upload.")
