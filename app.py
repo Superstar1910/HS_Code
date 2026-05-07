@@ -27,15 +27,27 @@ ERROR_CODE = "ERROR"
 UNCLASSIFIED_CODE = "UNCLASSIFIED"
 
 
+def _parse_value(raw) -> tuple[float, str]:
+    """Convert raw value to (normalised_float, warning_message).
+
+    The warning is non-empty only when the raw input was absent or invalid
+    and has been defaulted to 0.0.
+    """
+    if raw is None:
+        return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 0.0, " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
+    if not math.isfinite(v) or v < 0.0:
+        return 0.0, " Warning: declared value was missing or invalid; defaulted to £0 for risk assessment."
+    return round(v, 2), ""
+
+
 def _normalise_value(value) -> float:
     """Convert value to a finite, non-negative float rounded to pence."""
-    try:
-        v = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if not math.isfinite(v) or v < 0.0:
-        return 0.0
-    return round(v, 2)
+    v, _ = _parse_value(value)
+    return v
 
 
 def classify_product(description, material, origin, category, value):
@@ -96,16 +108,23 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     elif category_lower == "food" or any(
         w in desc for w in ("chocolate", "biscuit", "candy", "confection", "snack")
     ):
+        is_confectionery = any(w in desc for w in ("chocolate", "biscuit", "candy", "confection", "snack"))
+        food_vat = "20%" if is_confectionery else "0%"
+        vat_note = (
+            " Note: confectionery (chocolate, biscuits, candy) is standard-rated at 20% VAT in the UK."
+            if is_confectionery
+            else " Note: most food is zero-rated for VAT in the UK; verify the applicable rate."
+        )
         return {
             "hs6": "210690",
             "uk_code": "2106909900",
             "confidence": 0.65,
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "varies",
-            "vat": "20%",
+            "vat": food_vat,
             "explanation": (
                 "Classified under miscellaneous food preparations; phytosanitary and food safety checks required."
-                " Note: confectionery (chocolate, biscuits, candy) is standard-rated at 20% VAT in the UK." + origin_note + hv_note
+                + vat_note + origin_note + hv_note
             ),
         }
     elif category_lower == "fashion_accessories" or any(
@@ -127,7 +146,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "confidence": 0.0,
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "TBD",
-            "vat": "20%",
+            "vat": "TBD",
             "explanation": "Insufficient structured data; manual review recommended." + origin_note + hv_note,
         }
 
@@ -144,19 +163,7 @@ def _safe_str(v) -> str:
 
 def classify_row(row):
     """Apply classify_product to a DataFrame row; safe for use with df.apply()."""
-    raw_val = row.get("value")
-    val = _normalise_value(raw_val)
-    val_warning = ""
-    if val == 0.0:
-        if raw_val is None:
-            val_warning = " Warning: declared value was missing; defaulted to £0 for risk assessment."
-        else:
-            try:
-                parsed = float(raw_val)
-                if not math.isfinite(parsed) or parsed < 0.0:
-                    val_warning = " Warning: declared value was missing or invalid; defaulted to £0 for risk assessment."
-            except (ValueError, TypeError):
-                val_warning = " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
+    val, val_warning = _parse_value(row.get("value"))
     try:
         result = classify_product(
             _safe_str(row.get("description", "")),
@@ -175,7 +182,7 @@ def classify_row(row):
             "confidence": 0.0,
             "risk": RISK_AMBER,
             "duty": "TBD",
-            "vat": "20%",
+            "vat": "TBD",
             "explanation": f"Classification failed: {str(e)[:200]}",
         })
 
@@ -240,7 +247,7 @@ if page == "Dashboard":
     else:
         st.subheader("Session Risk Distribution (Demo)")
         st.info("No classifications yet this session. The chart below shows illustrative demo data.")
-        risk_df = pd.DataFrame({"Risk": ["GREEN", "AMBER", "RED"], "Count": [9710, 2140, 600]})
+        risk_df = pd.DataFrame({"Risk": [RISK_GREEN, RISK_AMBER, RISK_RED], "Count": [9710, 2140, 600]})
     st.bar_chart(risk_df.set_index("Risk"))
 
 elif page == "Classify":
