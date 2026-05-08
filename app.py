@@ -4,6 +4,8 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 
+_CONFECTIONERY_WORDS = ("chocolate", "biscuit", "candy", "confection", "snack")
+
 st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
 
 # Threshold above which items attract additional customs scrutiny
@@ -39,8 +41,10 @@ def _parse_value(raw) -> tuple[float, str]:
         v = float(raw)
     except (TypeError, ValueError):
         return 0.0, " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
-    if not math.isfinite(v) or v < 0.0:
-        return 0.0, " Warning: declared value was missing or invalid; defaulted to £0 for risk assessment."
+    if not math.isfinite(v):
+        return 0.0, " Warning: declared value was non-finite; defaulted to £0 for risk assessment."
+    if v < 0.0:
+        return 0.0, " Warning: declared value was negative; defaulted to £0 for risk assessment."
     return round(v, 2), ""
 
 
@@ -105,10 +109,8 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "vat": "20%",
             "explanation": "Classified under perfumes and toilet waters; regulated cosmetics handling required." + origin_note + hv_note,
         }
-    elif category_lower == "food" or any(
-        w in desc for w in ("chocolate", "biscuit", "candy", "confection", "snack")
-    ):
-        is_confectionery = any(w in desc for w in ("chocolate", "biscuit", "candy", "confection", "snack"))
+    elif category_lower == "food" or any(w in desc for w in _CONFECTIONERY_WORDS):
+        is_confectionery = any(w in desc for w in _CONFECTIONERY_WORDS)
         food_vat = "20%" if is_confectionery else "0%"
         vat_note = (
             " Note: confectionery (chocolate, biscuits, candy) is standard-rated at 20% VAT in the UK."
@@ -268,7 +270,7 @@ elif page == "Classify":
             else:
                 desc_clean = description.strip()
                 mat_clean = material.strip()
-                orig_clean = origin.strip()
+                orig_clean = origin.strip().upper()
                 result = classify_product(desc_clean, mat_clean, orig_clean, category, value)
                 entry = {
                     "description": desc_clean,
@@ -364,7 +366,7 @@ elif page == "Bulk Upload":
                 st.stop()
 
             if df.empty:
-                st.warning("The uploaded CSV contains no data rows.")
+                st.error("The uploaded CSV contains no data rows.")
                 st.stop()
 
             required = {"description", "material", "origin", "category", "value"}
