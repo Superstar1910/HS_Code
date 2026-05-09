@@ -362,7 +362,7 @@ elif page == "Bulk Upload":
                 st.stop()
 
             if len(df) > 5000:
-                st.error(f"CSV exceeds the 5,000-row limit (at least {len(df):,} rows found). Split the file and re-upload.")
+                st.error("CSV exceeds the 5,000-row limit (more than 5,000 rows detected). Split the file and re-upload.")
                 st.stop()
 
             if df.empty:
@@ -410,9 +410,10 @@ elif page == "Bulk Upload":
                 "summary": summary,
                 "filename": uploaded.name,
             }
+            st.session_state["_bulk_file_id"] = file_id
 
             for row in result_df.to_dict("records"):
-                if row.get("hs6") not in (ERROR_CODE, UNCLASSIFIED_CODE):
+                if row.get("hs6") != ERROR_CODE:
                     _add_to_review_queue({
                         "description": str(row.get("description", "")),
                         "value": row.get("value", 0.0),
@@ -421,8 +422,6 @@ elif page == "Bulk Upload":
                         "explanation": str(row.get("explanation", "")),
                         "risk": str(row.get("risk", RISK_AMBER)),
                     })
-
-            st.session_state["_bulk_file_id"] = file_id
 
     bulk = st.session_state["bulk_result"]
     if bulk is not None:
