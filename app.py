@@ -1,5 +1,6 @@
 import math
 from collections import Counter
+from typing import Tuple
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -29,7 +30,7 @@ ERROR_CODE = "ERROR"
 UNCLASSIFIED_CODE = "UNCLASSIFIED"
 
 
-def _parse_value(raw) -> tuple[float, str]:
+def _parse_value(raw) -> Tuple[float, str]:
     """Convert raw value to (normalised_float, warning_message).
 
     The warning is non-empty only when the raw input was absent or invalid
@@ -41,7 +42,9 @@ def _parse_value(raw) -> tuple[float, str]:
         v = float(raw)
     except (TypeError, ValueError):
         return 0.0, " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
-    if not math.isfinite(v):
+    if math.isnan(v):
+        return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
+    if math.isinf(v):
         return 0.0, " Warning: declared value was non-finite; defaulted to £0 for risk assessment."
     if v < 0.0:
         return 0.0, " Warning: declared value was negative; defaulted to £0 for risk assessment."
@@ -285,7 +288,7 @@ elif page == "Classify":
                 _add_to_review_queue(entry)
                 st.session_state["audit_log"].append({
                     "Timestamp": entry["timestamp"],
-                    "Event": f'"{entry["description"]}" classified as {entry["uk_code"]} (risk: {entry["risk"]})',
+                    "Event": f'"{ entry["description"]}" classified as {entry["uk_code"]} (risk: {entry["risk"]})',
                 })
 
     with right:
@@ -493,9 +496,13 @@ elif page == "Audit Trail":
     seed_logs = st.session_state["seed_logs"]
 
     session_logs = st.session_state["audit_log"]
-    logs = (
-        pd.DataFrame(seed_logs + session_logs)
-        .sort_values("Timestamp")
-        .reset_index(drop=True)
-    )
-    st.dataframe(logs, use_container_width=True)
+    all_logs = seed_logs + session_logs
+    if all_logs:
+        logs = (
+            pd.DataFrame(all_logs)
+            .sort_values("Timestamp")
+            .reset_index(drop=True)
+        )
+        st.dataframe(logs, use_container_width=True)
+    else:
+        st.info("No audit events recorded yet.")
