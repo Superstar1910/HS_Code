@@ -36,12 +36,15 @@ def _parse_value(raw) -> Tuple[float, str]:
     The warning is non-empty only when the raw input was absent or invalid
     and has been defaulted to 0.0.
     """
-    if raw is None:
-        return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
     try:
         v = float(raw)
     except (TypeError, ValueError):
-        return 0.0, " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
+        msg = (
+            " Warning: declared value was missing; defaulted to £0 for risk assessment."
+            if raw is None
+            else " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
+        )
+        return 0.0, msg
     if math.isnan(v):
         return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
     if math.isinf(v):
@@ -156,6 +159,14 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
         }
 
 
+def _format_confidence(conf) -> str:
+    """Return confidence as a clamped percentage string, e.g. '94%'."""
+    try:
+        return f"{min(100, max(0, round(float(conf) * 100)))}%"
+    except (TypeError, ValueError):
+        return "0%"
+
+
 def _safe_str(v) -> str:
     """Convert a value to string, returning empty string for NaN/None."""
     try:
@@ -206,7 +217,7 @@ def _add_to_review_queue(result: dict):
         st.session_state["review_items"].append({
             "Product": result["description"],
             "Suggested Code": result["uk_code"],
-            "Confidence": f'{min(100, max(0, round(result["confidence"] * 100)))}%',
+            "Confidence": _format_confidence(result["confidence"]),
             "Explanation": result["explanation"],
             "Risk": result["risk"],
             "Status": STATUS_PENDING,
@@ -288,7 +299,7 @@ elif page == "Classify":
                 _add_to_review_queue(entry)
                 st.session_state["audit_log"].append({
                     "Timestamp": entry["timestamp"],
-                    "Event": f'"{ entry["description"]}" classified as {entry["uk_code"]} (risk: {entry["risk"]})',
+                    "Event": f'"{entry["description"]}" classified as {entry["uk_code"]} (risk: {entry["risk"]})',
                 })
 
     with right:
@@ -303,7 +314,7 @@ elif page == "Classify":
         a, b, c = st.columns(3)
         a.metric("HS6", r["hs6"])
         b.metric("UK Commodity Code", r["uk_code"])
-        c.metric("Confidence", f'{min(100, max(0, round(r["confidence"] * 100)))}%')
+        c.metric("Confidence", _format_confidence(r["confidence"]))
 
         d, e, f = st.columns(3)
         d.metric("Risk", r["risk"])
