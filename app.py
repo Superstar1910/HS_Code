@@ -224,13 +224,111 @@ def _add_to_review_queue(result: dict):
         })
 
 
-# Initialise session state keys once so all pages can rely on them existing
+def _process_bulk_upload(uploaded, file_id: str) -> None:
+    """Validate, classify, and store results for a newly uploaded CSV.
+
+    Uses return-on-error instead of st.stop() so the caller can still render
+    any previously stored bulk results after a failed upload attempt.
+    """
+    try:
+        # Read one extra row so len(df) > 5000 can detect oversized files.
+        df = pd.read_csv(uploaded, nrows=5001, encoding="utf-8-sig", encoding_errors="replace")
+        df.columns = df.columns.str.strip().str.lower()
+        # Warn if any cell contains U+FFFD (the Unicode replacement character),
+        # which indicates bytes that could not be decoded from the file's encoding.
+        str_cols = df.select_dtypes(include=["object"])
+        if not str_cols.empty and str_cols.apply(
+            lambda col: col.astype(str).str.contains("�", regex=False).any()
+        ).any():
+            st.warning(
+                "Some characters in the CSV could not be decoded and have been "
+                "replaced with �. Re-save the file as UTF-8 to ensure accurate "
+                "classification."
+            )
+    except pd.errors.ParserError:
+        st.error("CSV format is invalid — check that columns are comma-separated and the file is UTF-8 encoded.")
+        return
+    except Exception as e:
+        st.error(f"Failed to read file: {e}")
+        return
+
+    if len(df) > 5000:
+        st.error("CSV exceeds the 5,000-row limit (more than 5,000 rows detected). Split the file and re-upload.")
+        return
+
+    if df.empty:
+        st.error("The uploaded CSV contains no data rows.")
+        return
+
+    required = {"description", "material", "origin", "category", "value"}
+    missing = required - set(df.columns)
+    if missing:
+        st.error(f"Missing required columns: {', '.join(sorted(missing))}")
+        return
+
+    # Warn if pre-existing result columns will be overwritten.
+    overlapping = sorted(col for col in RESULT_COLUMNS if col in df.columns)
+    if overlapping:
+        st.warning(f"The following columns from your CSV will be overwritten by classification results: {', '.join(overlapping)}")
+    # Drop any pre-existing result columns to avoid duplicate columns after concat.
+    input_df = df.drop(columns=overlapping).reset_index(drop=True)
+    try:
+        with st.spinner(f"Classifying {len(input_df)} rows…"):
+            result_df = pd.concat(
+                [input_df, input_df.apply(classify_row, axis=1)],
+                axis=1,
+            )
+    except Exception as e:
+        st.error(f"Classification failed: {e}")
+        return
+
+    error_count = int((result_df["hs6"] == ERROR_CODE).sum())
+    unclassified_count = int((result_df["hs6"] == UNCLASSIFIED_CODE).sum())
+    detail_parts = []
+    if unclassified_count:
+        detail_parts.append(f"{unclassified_count} unclassified")
+    if error_count:
+        detail_parts.append(f"{error_count} errors")
+    summary = f"Processed {len(result_df)} rows"
+    if detail_parts:
+        summary += f" ({', '.join(detail_parts)})"
+    st.session_state["audit_log"].append({
+        "Timestamp": datetime.now().isoformat(timespec="microseconds"),
+        "Event": f"Bulk upload: {summary} from '{uploaded.name}'",
+    })
+    st.session_state["bulk_result"] = {
+        "df": result_df,
+        "summary": summary,
+        "filename": uploaded.name,
+    }
+    st.session_state["_bulk_file_id"] = file_id
+
+    for row in result_df.to_dict("records"):
+        if row.get("hs6") != ERROR_CODE:
+            _add_to_review_queue({
+                "description": str(row.get("description", "")),
+                "value": row.get("value", 0.0),
+                "uk_code": str(row.get("uk_code", "")),
+                "confidence": row.get("confidence", 0.0),
+                "explanation": str(row.get("explanation", "")),
+                "risk": str(row.get("risk", RISK_AMBER)),
+            })
+
+
+# Initialise session state keys once so all pages can rely on them existing.
 st.session_state.setdefault("review_items", [])
 st.session_state.setdefault("review_keys", set())
 st.session_state.setdefault("audit_log", [])
 st.session_state.setdefault("bulk_result", None)
 st.session_state.setdefault("_bulk_file_id", None)
 st.session_state.setdefault("last_result", None)
+if "seed_logs" not in st.session_state:
+    _today = datetime.now().strftime("%Y-%m-%d")
+    st.session_state["seed_logs"] = [
+        {"Timestamp": f"{_today}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
+        {"Timestamp": f"{_today}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
+        {"Timestamp": f"{_today}T09:18:00.000000", "Event": "Approved and published to product master"},
+    ]
 
 st.sidebar.title("HS & Shipment Pre-Check")
 page = st.sidebar.radio("Navigate", ["Dashboard", "Classify", "Bulk Upload", "Review Queue", "Audit Trail"])
@@ -299,7 +397,7 @@ elif page == "Classify":
                 _add_to_review_queue(entry)
                 st.session_state["audit_log"].append({
                     "Timestamp": entry["timestamp"],
-                    "Event": f'"{entry["description"]}" classified as {entry["uk_code"]} (risk: {entry["risk"]})',
+                    "Event": f'"{ entry["description"]}" classified as {entry["uk_code"]} (risk: {entry["risk"]})',
                 })
 
     with right:
@@ -353,89 +451,7 @@ elif page == "Bulk Upload":
         # re-classifying (and adding duplicate audit entries) on every rerun.
         file_id = uploaded.file_id
         if st.session_state["_bulk_file_id"] != file_id:
-            try:
-                # Read one extra row so len(df) > 5000 can detect oversized files
-                df = pd.read_csv(uploaded, nrows=5001, encoding="utf-8-sig", encoding_errors="replace")
-                df.columns = df.columns.str.strip().str.lower()
-                # Warn if any cell contains the Unicode replacement character,
-                # which indicates bytes that could not be decoded from the file's encoding.
-                str_cols = df.select_dtypes(include=["object"])
-                if not str_cols.empty and str_cols.apply(
-                    lambda col: col.astype(str).str.contains("�", regex=False).any()
-                ).any():
-                    st.warning(
-                        "Some characters in the CSV could not be decoded and have been "
-                        "replaced with �. Re-save the file as UTF-8 to ensure accurate "
-                        "classification."
-                    )
-            except pd.errors.ParserError:
-                st.error("CSV format is invalid — check that columns are comma-separated and the file is UTF-8 encoded.")
-                st.stop()
-            except Exception as e:
-                st.error(f"Failed to read file: {e}")
-                st.stop()
-
-            if len(df) > 5000:
-                st.error("CSV exceeds the 5,000-row limit (more than 5,000 rows detected). Split the file and re-upload.")
-                st.stop()
-
-            if df.empty:
-                st.error("The uploaded CSV contains no data rows.")
-                st.stop()
-
-            required = {"description", "material", "origin", "category", "value"}
-            missing = required - set(df.columns)
-            if missing:
-                st.error(f"Missing required columns: {', '.join(sorted(missing))}")
-                st.stop()
-
-            # Warn if pre-existing result columns will be overwritten
-            overlapping = sorted(col for col in RESULT_COLUMNS if col in df.columns)
-            if overlapping:
-                st.warning(f"The following columns from your CSV will be overwritten by classification results: {', '.join(overlapping)}")
-            # Drop any pre-existing result columns to avoid duplicate columns after concat
-            input_df = df.drop(columns=overlapping).reset_index(drop=True)
-            try:
-                with st.spinner(f"Classifying {len(input_df)} rows…"):
-                    result_df = pd.concat(
-                        [input_df, input_df.apply(classify_row, axis=1)],
-                        axis=1,
-                    )
-            except Exception as e:
-                st.error(f"Classification failed: {e}")
-                st.stop()
-
-            error_count = int((result_df["hs6"] == ERROR_CODE).sum())
-            unclassified_count = int((result_df["hs6"] == UNCLASSIFIED_CODE).sum())
-            detail_parts = []
-            if unclassified_count:
-                detail_parts.append(f"{unclassified_count} unclassified")
-            if error_count:
-                detail_parts.append(f"{error_count} errors")
-            summary = f"Processed {len(result_df)} rows"
-            if detail_parts:
-                summary += f" ({', '.join(detail_parts)})"
-            st.session_state["audit_log"].append({
-                "Timestamp": datetime.now().isoformat(timespec="microseconds"),
-                "Event": f"Bulk upload: {summary} from '{uploaded.name}'",
-            })
-            st.session_state["bulk_result"] = {
-                "df": result_df,
-                "summary": summary,
-                "filename": uploaded.name,
-            }
-            st.session_state["_bulk_file_id"] = file_id
-
-            for row in result_df.to_dict("records"):
-                if row.get("hs6") != ERROR_CODE:
-                    _add_to_review_queue({
-                        "description": str(row.get("description", "")),
-                        "value": row.get("value", 0.0),
-                        "uk_code": str(row.get("uk_code", "")),
-                        "confidence": row.get("confidence", 0.0),
-                        "explanation": str(row.get("explanation", "")),
-                        "risk": str(row.get("risk", RISK_AMBER)),
-                    })
+            _process_bulk_upload(uploaded, file_id)
 
     bulk = st.session_state["bulk_result"]
     if bulk is not None:
@@ -496,14 +512,6 @@ elif page == "Review Queue":
 elif page == "Audit Trail":
     st.title("Audit Trail")
 
-    # Initialise seed logs once per session so they don't regenerate on every rerun
-    if "seed_logs" not in st.session_state:
-        today = datetime.now().strftime("%Y-%m-%d")
-        st.session_state["seed_logs"] = [
-            {"Timestamp": f"{today}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
-            {"Timestamp": f"{today}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
-            {"Timestamp": f"{today}T09:18:00.000000", "Event": "Approved and published to product master"},
-        ]
     seed_logs = st.session_state["seed_logs"]
 
     session_logs = st.session_state["audit_log"]
