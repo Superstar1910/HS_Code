@@ -82,6 +82,8 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
         else " Warning: country of origin not declared — required for customs clearance."
     )
 
+    is_confectionery = any(w in desc for w in _CONFECTIONERY_WORDS)
+
     if ("scarf" in desc or "scarves" in desc) and ("silk" in material_lower or "silk" in desc):
         return {
             "hs6": "621410",
@@ -115,11 +117,11 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "vat": "20%",
             "explanation": "Classified under perfumes and toilet waters; regulated cosmetics handling required." + origin_note + hv_note,
         }
-    elif category_lower == "food" or any(w in desc for w in _CONFECTIONERY_WORDS):
-        is_confectionery = any(w in desc for w in _CONFECTIONERY_WORDS)
+    elif category_lower == "food" or is_confectionery:
         food_vat = "20%" if is_confectionery else "0%"
         vat_note = (
-            " Note: confectionery (chocolate, biscuits, candy) is standard-rated at 20% VAT in the UK."
+            " Note: confectionery and snack products (e.g. chocolate, biscuits, candy, confections, snacks)"
+            " are standard-rated at 20% VAT in the UK."
             if is_confectionery
             else " Note: most food is zero-rated for VAT in the UK; verify the applicable rate."
         )
@@ -397,7 +399,7 @@ elif page == "Classify":
                 _add_to_review_queue(entry)
                 st.session_state["audit_log"].append({
                     "Timestamp": entry["timestamp"],
-                    "Event": f'"{ entry["description"]}" classified as {entry["uk_code"]} (risk: {entry["risk"]})',
+                    "Event": f'"{entry["description"]}" classified as {entry["uk_code"]} (risk: {entry["risk"]})',
                 })
 
     with right:
