@@ -1,4 +1,5 @@
 import math
+import re
 from collections import Counter
 from typing import Tuple
 import streamlit as st
@@ -6,6 +7,13 @@ import pandas as pd
 from datetime import datetime
 
 _CONFECTIONERY_WORDS = ("chocolate", "biscuit", "candy", "confection", "snack")
+_FASHION_WORDS = ("belt", "wallet", "glove", "hat", "cap", "tie", "brooch")
+
+
+def _word_in_text(word: str, text: str) -> bool:
+    """Return True if word appears as a whole word in text."""
+    return bool(re.search(r'\b' + re.escape(word) + r'\b', text))
+
 
 st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
 
@@ -82,9 +90,11 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
         else " Warning: country of origin not declared — required for customs clearance."
     )
 
-    is_confectionery = any(w in desc for w in _CONFECTIONERY_WORDS)
+    is_confectionery = any(_word_in_text(w, desc) for w in _CONFECTIONERY_WORDS)
 
-    if ("scarf" in desc or "scarves" in desc) and ("silk" in material_lower or "silk" in desc):
+    if (
+        _word_in_text("scarf", desc) or _word_in_text("scarves", desc)
+    ) and ("silk" in material_lower or _word_in_text("silk", desc)):
         return {
             "hs6": "621410",
             "uk_code": "6214100090",
@@ -95,9 +105,9 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "explanation": "Classified under silk scarves based on material composition and accessory type." + origin_note + hv_note,
         }
     elif (
-        "bag" in desc or "purse" in desc
+        _word_in_text("bag", desc) or _word_in_text("purse", desc)
         or category_lower == "bags"
-    ) and ("leather" in material_lower or "leather" in desc):
+    ) and ("leather" in material_lower or _word_in_text("leather", desc)):
         return {
             "hs6": "420221",
             "uk_code": "4202210000",
@@ -107,7 +117,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "vat": "20%",
             "explanation": "Classified under handbags with outer surface of leather." + origin_note + hv_note,
         }
-    elif "perfume" in desc or "eau de parfum" in desc or category_lower == "beauty":
+    elif _word_in_text("perfume", desc) or "eau de parfum" in desc or category_lower == "beauty":
         return {
             "hs6": "330300",
             "uk_code": "3303001000",
@@ -138,7 +148,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             ),
         }
     elif category_lower == "fashion_accessories" or any(
-        w in desc for w in ("belt", "wallet", "glove", "hat", "cap", "tie", "brooch")
+        _word_in_text(w, desc) for w in _FASHION_WORDS
     ):
         return {
             "hs6": "621790",
@@ -284,8 +294,8 @@ def _process_bulk_upload(uploaded, file_id: str) -> None:
         st.error(f"Classification failed: {e}")
         return
 
-    error_count = int((result_df["hs6"] == ERROR_CODE).sum())
-    unclassified_count = int((result_df["hs6"] == UNCLASSIFIED_CODE).sum())
+    error_count = (result_df["hs6"] == ERROR_CODE).sum()
+    unclassified_count = (result_df["hs6"] == UNCLASSIFIED_CODE).sum()
     detail_parts = []
     if unclassified_count:
         detail_parts.append(f"{unclassified_count} unclassified")
@@ -514,6 +524,14 @@ elif page == "Review Queue":
 elif page == "Audit Trail":
     st.title("Audit Trail")
 
+    # Initialise seed logs once per session so they don't regenerate on every rerun.
+    if "seed_logs" not in st.session_state:
+        today = datetime.now().strftime("%Y-%m-%d")
+        st.session_state["seed_logs"] = [
+            {"Timestamp": f"{today}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
+            {"Timestamp": f"{today}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
+            {"Timestamp": f"{today}T09:18:00.000000", "Event": "Approved and published to product master"},
+        ]
     seed_logs = st.session_state["seed_logs"]
 
     session_logs = st.session_state["audit_log"]
