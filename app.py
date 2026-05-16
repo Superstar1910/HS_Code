@@ -1,3 +1,4 @@
+import functools
 import math
 import re
 from collections import Counter
@@ -6,13 +7,18 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 
-_CONFECTIONERY_WORDS = ("chocolate", "biscuit", "candy", "confection", "snack")
+_CONFECTIONERY_WORDS = ("chocolate", "biscuit", "biscuits", "candy", "confection", "confections", "snack", "snacks")
 _FASHION_WORDS = ("belt", "wallet", "glove", "hat", "cap", "tie", "brooch")
+
+
+@functools.lru_cache(maxsize=None)
+def _word_pattern(word: str) -> re.Pattern:
+    return re.compile(r'\b' + re.escape(word) + r'\b')
 
 
 def _word_in_text(word: str, text: str) -> bool:
     """Return True if word appears as a whole word in text."""
-    return bool(re.search(r'\b' + re.escape(word) + r'\b', text))
+    return bool(_word_pattern(word).search(text))
 
 
 st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
@@ -524,14 +530,6 @@ elif page == "Review Queue":
 elif page == "Audit Trail":
     st.title("Audit Trail")
 
-    # Initialise seed logs once per session so they don't regenerate on every rerun.
-    if "seed_logs" not in st.session_state:
-        today = datetime.now().strftime("%Y-%m-%d")
-        st.session_state["seed_logs"] = [
-            {"Timestamp": f"{today}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
-            {"Timestamp": f"{today}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
-            {"Timestamp": f"{today}T09:18:00.000000", "Event": "Approved and published to product master"},
-        ]
     seed_logs = st.session_state["seed_logs"]
 
     session_logs = st.session_state["audit_log"]
