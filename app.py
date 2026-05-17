@@ -85,7 +85,7 @@ def classify_product(description, material, origin, category, value):
     )
 
 
-@st.cache_data
+@functools.lru_cache(maxsize=None)
 def _classify_product_cached(desc, material_lower, origin_upper, category_lower, value):
     # value is already rounded to pence and guaranteed finite by _normalise_value
     high_value = value >= HIGH_VALUE_THRESHOLD
@@ -187,6 +187,8 @@ def _format_confidence(conf) -> str:
 
 def _safe_str(v) -> str:
     """Convert a value to string, returning empty string for NaN/None."""
+    if v is None:
+        return ""
     try:
         if pd.isna(v):
             return ""
@@ -248,6 +250,9 @@ def _process_bulk_upload(uploaded, file_id: str) -> None:
     Uses return-on-error instead of st.stop() so the caller can still render
     any previously stored bulk results after a failed upload attempt.
     """
+    # Mark the file as seen immediately so Streamlit reruns (triggered by
+    # widgets elsewhere on the page) don't re-process the same file.
+    st.session_state["_bulk_file_id"] = file_id
     try:
         # Read one extra row so len(df) > 5000 can detect oversized files.
         df = pd.read_csv(uploaded, nrows=5001, encoding="utf-8-sig", encoding_errors="replace")
@@ -319,7 +324,6 @@ def _process_bulk_upload(uploaded, file_id: str) -> None:
         "summary": summary,
         "filename": uploaded.name,
     }
-    st.session_state["_bulk_file_id"] = file_id
 
     for row in result_df.to_dict("records"):
         if row.get("hs6") != ERROR_CODE:
@@ -340,13 +344,12 @@ st.session_state.setdefault("audit_log", [])
 st.session_state.setdefault("bulk_result", None)
 st.session_state.setdefault("_bulk_file_id", None)
 st.session_state.setdefault("last_result", None)
-if "seed_logs" not in st.session_state:
-    _today = datetime.now().strftime("%Y-%m-%d")
-    st.session_state["seed_logs"] = [
-        {"Timestamp": f"{_today}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
-        {"Timestamp": f"{_today}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
-        {"Timestamp": f"{_today}T09:18:00.000000", "Event": "Approved and published to product master"},
-    ]
+_today = datetime.now().strftime("%Y-%m-%d")
+st.session_state.setdefault("seed_logs", [
+    {"Timestamp": f"{_today}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
+    {"Timestamp": f"{_today}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
+    {"Timestamp": f"{_today}T09:18:00.000000", "Event": "Approved and published to product master"},
+])
 
 st.sidebar.title("HS & Shipment Pre-Check")
 page = st.sidebar.radio("Navigate", ["Dashboard", "Classify", "Bulk Upload", "Review Queue", "Audit Trail"])
@@ -499,11 +502,11 @@ elif page == "Review Queue":
 
         if col1.button("Approve All"):
             ts = datetime.now().isoformat(timespec="microseconds")
-            count = sum(1 for item in items if item["Status"] == STATUS_PENDING)
-            st.session_state["review_items"] = [
-                {**item, "Status": STATUS_APPROVED} if item["Status"] == STATUS_PENDING else item
-                for item in items
-            ]
+            count = 0
+            for item in st.session_state["review_items"]:
+                if item["Status"] == STATUS_PENDING:
+                    item["Status"] = STATUS_APPROVED
+                    count += 1
             st.session_state["audit_log"].append({
                 "Timestamp": ts,
                 "Event": f"Review Queue: {count} pending item(s) approved in bulk",
@@ -513,11 +516,11 @@ elif page == "Review Queue":
 
         if col2.button("Override All"):
             ts = datetime.now().isoformat(timespec="microseconds")
-            count = sum(1 for item in items if item["Status"] == STATUS_PENDING)
-            st.session_state["review_items"] = [
-                {**item, "Status": STATUS_OVERRIDDEN} if item["Status"] == STATUS_PENDING else item
-                for item in items
-            ]
+            count = 0
+            for item in st.session_state["review_items"]:
+                if item["Status"] == STATUS_PENDING:
+                    item["Status"] = STATUS_OVERRIDDEN
+                    count += 1
             st.session_state["audit_log"].append({
                 "Timestamp": ts,
                 "Event": f"Review Queue: {count} pending item(s) flagged for analyst override in bulk",
