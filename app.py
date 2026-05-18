@@ -53,9 +53,13 @@ def _parse_value(raw) -> Tuple[float, str]:
     try:
         v = float(raw)
     except (TypeError, ValueError):
+        try:
+            is_missing = pd.isna(raw)
+        except Exception:
+            is_missing = raw is None
         msg = (
             " Warning: declared value was missing; defaulted to £0 for risk assessment."
-            if raw is None
+            if is_missing
             else " Warning: declared value could not be parsed; defaulted to £0 for risk assessment."
         )
         return 0.0, msg
@@ -100,7 +104,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
 
     if (
         _word_in_text("scarf", desc) or _word_in_text("scarves", desc)
-    ) and ("silk" in material_lower or _word_in_text("silk", desc)):
+    ) and (_word_in_text("silk", material_lower) or _word_in_text("silk", desc)):
         return {
             "hs6": "621410",
             "uk_code": "6214100090",
@@ -113,7 +117,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     elif (
         _word_in_text("bag", desc) or _word_in_text("purse", desc)
         or category_lower == "bags"
-    ) and ("leather" in material_lower or _word_in_text("leather", desc)):
+    ) and (_word_in_text("leather", material_lower) or _word_in_text("leather", desc)):
         return {
             "hs6": "420221",
             "uk_code": "4202210000",
@@ -297,10 +301,8 @@ def _process_bulk_upload(uploaded, file_id: str) -> None:
     input_df = df.drop(columns=overlapping).reset_index(drop=True)
     try:
         with st.spinner(f"Classifying {len(input_df)} rows…"):
-            result_df = pd.concat(
-                [input_df, input_df.apply(classify_row, axis=1)],
-                axis=1,
-            )
+            classified = input_df.apply(classify_row, axis=1).reset_index(drop=True)
+            result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
         st.error(f"Classification failed: {e}")
         return
@@ -470,7 +472,8 @@ elif page == "Bulk Upload":
     if uploaded:
         # Only re-process when the file actually changes; guards against
         # re-classifying (and adding duplicate audit entries) on every rerun.
-        file_id = uploaded.file_id
+        # Use (name, size) as a stable dedup key — both are public Streamlit API.
+        file_id = (uploaded.name, uploaded.size)
         if st.session_state["_bulk_file_id"] != file_id:
             _process_bulk_upload(uploaded, file_id)
 
