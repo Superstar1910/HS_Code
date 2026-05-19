@@ -80,13 +80,14 @@ def _normalise_value(value) -> float:
 
 def classify_product(description, material, origin, category, value):
     """Normalise inputs then delegate to the cached implementation."""
-    return _classify_product_cached(
+    # Return a shallow copy so callers cannot mutate the lru_cache entry.
+    return dict(_classify_product_cached(
         (description or "").strip().lower(),
         (material or "").strip().lower(),
         (origin or "").strip().upper(),
         (category or "").strip().lower(),
         _normalise_value(value),
-    )
+    ))
 
 
 @functools.lru_cache(maxsize=None)
@@ -223,7 +224,7 @@ def classify_row(row):
             "risk": RISK_AMBER,
             "duty": "TBD",
             "vat": "TBD",
-            "explanation": f"Classification failed: {str(e)[:200]}",
+            "explanation": f"Classification failed: {type(e).__name__}: {str(e)}"[:250],
         })
 
 
