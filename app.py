@@ -90,7 +90,7 @@ def classify_product(description, material, origin, category, value):
     ))
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=4096)
 def _classify_product_cached(desc, material_lower, origin_upper, category_lower, value):
     # value is already rounded to pence and guaranteed finite by _normalise_value
     high_value = value >= HIGH_VALUE_THRESHOLD
@@ -249,7 +249,7 @@ def _add_to_review_queue(result: dict):
         })
 
 
-def _process_bulk_upload(uploaded, file_id: str) -> None:
+def _process_bulk_upload(uploaded, file_id: Tuple[str, int]) -> None:
     """Validate, classify, and store results for a newly uploaded CSV.
 
     Uses return-on-error instead of st.stop() so the caller can still render
@@ -258,6 +258,7 @@ def _process_bulk_upload(uploaded, file_id: str) -> None:
     # Mark the file as seen immediately so Streamlit reruns (triggered by
     # widgets elsewhere on the page) don't re-process the same file.
     st.session_state["_bulk_file_id"] = file_id
+    st.session_state["_bulk_messages"] = []
     try:
         # Read one extra row so len(df) > 5000 can detect oversized files.
         df = pd.read_csv(uploaded, nrows=5001, encoding="utf-8-sig", encoding_errors="replace")
@@ -268,36 +269,36 @@ def _process_bulk_upload(uploaded, file_id: str) -> None:
         if not str_cols.empty and str_cols.apply(
             lambda col: col.astype(str).str.contains("�", regex=False).any()
         ).any():
-            st.warning(
+            st.session_state["_bulk_messages"].append(("warning", (
                 "Some characters in the CSV could not be decoded and have been "
                 "replaced with �. Re-save the file as UTF-8 to ensure accurate "
                 "classification."
-            )
+            )))
     except pd.errors.ParserError:
-        st.error("CSV format is invalid — check that columns are comma-separated and the file is UTF-8 encoded.")
+        st.session_state["_bulk_messages"].append(("error", "CSV format is invalid — check that columns are comma-separated and the file is UTF-8 encoded."))
         return
     except Exception as e:
-        st.error(f"Failed to read file: {e}")
+        st.session_state["_bulk_messages"].append(("error", f"Failed to read file: {e}"))
         return
 
     if len(df) > 5000:
-        st.error("CSV exceeds the 5,000-row limit (more than 5,000 rows detected). Split the file and re-upload.")
+        st.session_state["_bulk_messages"].append(("error", "CSV exceeds the 5,000-row limit (more than 5,000 rows detected). Split the file and re-upload."))
         return
 
     if df.empty:
-        st.error("The uploaded CSV contains no data rows.")
+        st.session_state["_bulk_messages"].append(("error", "The uploaded CSV contains no data rows."))
         return
 
     required = {"description", "material", "origin", "category", "value"}
     missing = required - set(df.columns)
     if missing:
-        st.error(f"Missing required columns: {', '.join(sorted(missing))}")
+        st.session_state["_bulk_messages"].append(("error", f"Missing required columns: {', '.join(sorted(missing))}"))
         return
 
     # Warn if pre-existing result columns will be overwritten.
     overlapping = sorted(col for col in RESULT_COLUMNS if col in df.columns)
     if overlapping:
-        st.warning(f"The following columns from your CSV will be overwritten by classification results: {', '.join(overlapping)}")
+        st.session_state["_bulk_messages"].append(("warning", f"The following columns from your CSV will be overwritten by classification results: {', '.join(overlapping)}"))
     # Drop any pre-existing result columns to avoid duplicate columns after concat.
     input_df = df.drop(columns=overlapping).reset_index(drop=True)
     try:
@@ -305,7 +306,7 @@ def _process_bulk_upload(uploaded, file_id: str) -> None:
             classified = input_df.apply(classify_row, axis=1).reset_index(drop=True)
             result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
-        st.error(f"Classification failed: {e}")
+        st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
         return
 
     error_count = (result_df["hs6"] == ERROR_CODE).sum()
@@ -346,6 +347,7 @@ st.session_state.setdefault("review_keys", set())
 st.session_state.setdefault("audit_log", [])
 st.session_state.setdefault("bulk_result", None)
 st.session_state.setdefault("_bulk_file_id", None)
+st.session_state.setdefault("_bulk_messages", [])
 st.session_state.setdefault("last_result", None)
 _today = datetime.now().strftime("%Y-%m-%d")
 st.session_state.setdefault("seed_logs", [
@@ -478,13 +480,19 @@ elif page == "Bulk Upload":
         if st.session_state["_bulk_file_id"] != file_id:
             _process_bulk_upload(uploaded, file_id)
 
+    for _level, _msg in st.session_state["_bulk_messages"]:
+        if _level == "error":
+            st.error(_msg)
+        else:
+            st.warning(_msg)
+
     bulk = st.session_state["bulk_result"]
     if bulk is not None:
         st.success(bulk["summary"])
         st.dataframe(bulk["df"], use_container_width=True)
         st.download_button(
             "Download Results CSV",
-            data=bulk["df"].to_csv(index=False).encode("utf-8"),
+            data=bulk["df"].to_csv(index=False).encode("utf-8-sig"),
             file_name="hs_classification_results.csv",
             mime="text/csv",
         )
