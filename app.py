@@ -11,7 +11,7 @@ _CONFECTIONERY_WORDS = ("chocolate", "biscuit", "biscuits", "candy", "confection
 _FASHION_WORDS = ("belt", "wallet", "glove", "hat", "cap", "tie", "brooch")
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=32)
 def _word_pattern(word: str) -> re.Pattern:
     return re.compile(r'\b' + re.escape(word) + r'\b')
 
@@ -23,15 +23,13 @@ def _word_in_text(word: str, text: str) -> bool:
 
 st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
 
-# Threshold above which items attract additional customs scrutiny
+# £1000 triggers additional customs scrutiny regardless of category
 HIGH_VALUE_THRESHOLD = 1000.00
 
-# Valid risk levels
 RISK_GREEN = "GREEN"
 RISK_AMBER = "AMBER"
 RISK_RED = "RED"
 
-# Review queue status values
 STATUS_PENDING = "Pending review"
 STATUS_APPROVED = "Approved"
 STATUS_OVERRIDDEN = "Overridden — pending analyst"
@@ -39,9 +37,11 @@ STATUS_OVERRIDDEN = "Overridden — pending analyst"
 # Columns produced by classify_product — used to drop conflicts before bulk concat
 RESULT_COLUMNS = frozenset({"hs6", "uk_code", "confidence", "risk", "duty", "vat", "explanation"})
 
-# Sentinel values used in result rows
 ERROR_CODE = "ERROR"
 UNCLASSIFIED_CODE = "UNCLASSIFIED"
+
+_MSG_ERROR = "error"
+_MSG_WARNING = "warning"
 
 
 def _parse_value(raw) -> Tuple[float, str]:
@@ -267,38 +267,38 @@ def _process_bulk_upload(uploaded, file_id: Tuple[str, int]) -> None:
         # which indicates bytes that could not be decoded from the file's encoding.
         str_cols = df.select_dtypes(include=["object"])
         if not str_cols.empty and str_cols.apply(
-            lambda col: col.astype(str).str.contains("�", regex=False).any()
+            lambda col: col.str.contains("�", regex=False, na=False).any()
         ).any():
-            st.session_state["_bulk_messages"].append(("warning", (
+            st.session_state["_bulk_messages"].append((_MSG_WARNING, (
                 "Some characters in the CSV could not be decoded and have been "
                 "replaced with �. Re-save the file as UTF-8 to ensure accurate "
                 "classification."
             )))
     except pd.errors.ParserError:
-        st.session_state["_bulk_messages"].append(("error", "CSV format is invalid — check that columns are comma-separated and the file is UTF-8 encoded."))
+        st.session_state["_bulk_messages"].append((_MSG_ERROR, "CSV format is invalid — check that columns are comma-separated and the file is UTF-8 encoded."))
         return
     except Exception as e:
-        st.session_state["_bulk_messages"].append(("error", f"Failed to read file: {e}"))
+        st.session_state["_bulk_messages"].append((_MSG_ERROR, f"Failed to read file: {e}"))
         return
 
     if len(df) > 5000:
-        st.session_state["_bulk_messages"].append(("error", "CSV exceeds the 5,000-row limit (more than 5,000 rows detected). Split the file and re-upload."))
+        st.session_state["_bulk_messages"].append((_MSG_ERROR, "CSV exceeds the 5,000-row limit (more than 5,000 rows detected). Split the file and re-upload."))
         return
 
     if df.empty:
-        st.session_state["_bulk_messages"].append(("error", "The uploaded CSV contains no data rows."))
+        st.session_state["_bulk_messages"].append((_MSG_ERROR, "The uploaded CSV contains no data rows."))
         return
 
     required = {"description", "material", "origin", "category", "value"}
     missing = required - set(df.columns)
     if missing:
-        st.session_state["_bulk_messages"].append(("error", f"Missing required columns: {', '.join(sorted(missing))}"))
+        st.session_state["_bulk_messages"].append((_MSG_ERROR, f"Missing required columns: {', '.join(sorted(missing))}"))
         return
 
     # Warn if pre-existing result columns will be overwritten.
     overlapping = sorted(col for col in RESULT_COLUMNS if col in df.columns)
     if overlapping:
-        st.session_state["_bulk_messages"].append(("warning", f"The following columns from your CSV will be overwritten by classification results: {', '.join(overlapping)}"))
+        st.session_state["_bulk_messages"].append((_MSG_WARNING, f"The following columns from your CSV will be overwritten by classification results: {', '.join(overlapping)}"))
     # Drop any pre-existing result columns to avoid duplicate columns after concat.
     input_df = df.drop(columns=overlapping).reset_index(drop=True)
     try:
@@ -306,7 +306,7 @@ def _process_bulk_upload(uploaded, file_id: Tuple[str, int]) -> None:
             classified = input_df.apply(classify_row, axis=1).reset_index(drop=True)
             result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
-        st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
+        st.session_state["_bulk_messages"].append((_MSG_ERROR, f"Classification failed: {e}"))
         return
 
     error_count = (result_df["hs6"] == ERROR_CODE).sum()
@@ -329,16 +329,30 @@ def _process_bulk_upload(uploaded, file_id: Tuple[str, int]) -> None:
         "filename": uploaded.name,
     }
 
-    for row in result_df.to_dict("records"):
-        if row.get("hs6") != ERROR_CODE:
-            _add_to_review_queue({
-                "description": str(row.get("description", "")),
-                "value": row.get("value", 0.0),
-                "uk_code": str(row.get("uk_code", "")),
-                "confidence": row.get("confidence", 0.0),
-                "explanation": str(row.get("explanation", "")),
-                "risk": str(row.get("risk", RISK_AMBER)),
-            })
+    for row in result_df[result_df["hs6"] != ERROR_CODE].to_dict("records"):
+        _add_to_review_queue({
+            "description": str(row.get("description", "")),
+            "value": row.get("value", 0.0),
+            "uk_code": str(row.get("uk_code", "")),
+            "confidence": row.get("confidence", 0.0),
+            "explanation": str(row.get("explanation", "")),
+            "risk": str(row.get("risk", RISK_AMBER)),
+        })
+
+
+def _bulk_update_status(new_status: str, event_label: str, toast_msg: str, icon: str) -> None:
+    ts = datetime.now().isoformat(timespec="microseconds")
+    count = 0
+    for item in st.session_state["review_items"]:
+        if item["Status"] == STATUS_PENDING:
+            item["Status"] = new_status
+            count += 1
+    st.session_state["audit_log"].append({
+        "Timestamp": ts,
+        "Event": f"Review Queue: {count} pending item(s) {event_label} in bulk",
+    })
+    st.toast(f"{count} pending item(s) {toast_msg}.", icon=icon)
+    st.rerun()
 
 
 # Initialise session state keys once so all pages can rely on them existing.
@@ -349,12 +363,13 @@ st.session_state.setdefault("bulk_result", None)
 st.session_state.setdefault("_bulk_file_id", None)
 st.session_state.setdefault("_bulk_messages", [])
 st.session_state.setdefault("last_result", None)
-_today = datetime.now().strftime("%Y-%m-%d")
-st.session_state.setdefault("seed_logs", [
-    {"Timestamp": f"{_today}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
-    {"Timestamp": f"{_today}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
-    {"Timestamp": f"{_today}T09:18:00.000000", "Event": "Approved and published to product master"},
-])
+if "seed_logs" not in st.session_state:
+    _today = datetime.now().strftime("%Y-%m-%d")
+    st.session_state["seed_logs"] = [
+        {"Timestamp": f"{_today}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
+        {"Timestamp": f"{_today}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
+        {"Timestamp": f"{_today}T09:18:00.000000", "Event": "Approved and published to product master"},
+    ]
 
 st.sidebar.title("HS & Shipment Pre-Check")
 page = st.sidebar.radio("Navigate", ["Dashboard", "Classify", "Bulk Upload", "Review Queue", "Audit Trail"])
@@ -364,7 +379,11 @@ if page == "Dashboard":
 
     session_items = st.session_state["review_items"]
     session_total = len(session_items)
-    status_counts = Counter(i["Status"] for i in session_items)
+    status_counts: Counter = Counter()
+    risk_counts: Counter = Counter()
+    for _item in session_items:
+        status_counts[_item["Status"]] += 1
+        risk_counts[_item["Risk"]] += 1
     session_pending = status_counts[STATUS_PENDING]
     session_approved = status_counts[STATUS_APPROVED]
     session_overridden = status_counts[STATUS_OVERRIDDEN]
@@ -379,10 +398,9 @@ if page == "Dashboard":
 
     if session_items:
         st.subheader("Session Risk Distribution")
-        counted = Counter(i["Risk"] for i in session_items)
         risk_df = pd.DataFrame(
             {"Risk": [RISK_GREEN, RISK_AMBER, RISK_RED],
-             "Count": [counted[RISK_GREEN], counted[RISK_AMBER], counted[RISK_RED]]},
+             "Count": [risk_counts[RISK_GREEN], risk_counts[RISK_AMBER], risk_counts[RISK_RED]]},
         )
     else:
         st.subheader("Session Risk Distribution (Demo)")
@@ -513,32 +531,10 @@ elif page == "Review Queue":
         col1, col2 = st.columns(2)
 
         if col1.button("Approve All"):
-            ts = datetime.now().isoformat(timespec="microseconds")
-            count = 0
-            for item in st.session_state["review_items"]:
-                if item["Status"] == STATUS_PENDING:
-                    item["Status"] = STATUS_APPROVED
-                    count += 1
-            st.session_state["audit_log"].append({
-                "Timestamp": ts,
-                "Event": f"Review Queue: {count} pending item(s) approved in bulk",
-            })
-            st.toast(f"{count} pending item(s) marked as approved.", icon="✅")
-            st.rerun()
+            _bulk_update_status(STATUS_APPROVED, "approved", "marked as approved", "✅")
 
         if col2.button("Override All"):
-            ts = datetime.now().isoformat(timespec="microseconds")
-            count = 0
-            for item in st.session_state["review_items"]:
-                if item["Status"] == STATUS_PENDING:
-                    item["Status"] = STATUS_OVERRIDDEN
-                    count += 1
-            st.session_state["audit_log"].append({
-                "Timestamp": ts,
-                "Event": f"Review Queue: {count} pending item(s) flagged for analyst override in bulk",
-            })
-            st.toast(f"{count} pending item(s) flagged for analyst override.", icon="⚠️")
-            st.rerun()
+            _bulk_update_status(STATUS_OVERRIDDEN, "flagged for analyst override", "flagged for analyst override", "⚠️")
     else:
         st.info("No items in the review queue. Classify a product first or use Bulk Upload.")
 
