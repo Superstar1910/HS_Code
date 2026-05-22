@@ -101,8 +101,6 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
         else " Warning: country of origin not declared — required for customs clearance."
     )
 
-    is_confectionery = any(_word_in_text(w, desc) for w in _CONFECTIONERY_WORDS)
-
     if (
         _word_in_text("scarf", desc) or _word_in_text("scarves", desc)
     ) and (_word_in_text("silk", material_lower) or _word_in_text("silk", desc)):
@@ -138,7 +136,8 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "vat": "20%",
             "explanation": "Classified under perfumes and toilet waters; regulated cosmetics handling required." + origin_note + hv_note,
         }
-    elif category_lower == "food" or is_confectionery:
+    elif category_lower == "food" or any(_word_in_text(w, desc) for w in _CONFECTIONERY_WORDS):
+        is_confectionery = any(_word_in_text(w, desc) for w in _CONFECTIONERY_WORDS)
         food_vat = "20%" if is_confectionery else "0%"
         vat_note = (
             " Note: confectionery and snack products (e.g. chocolate, biscuits, candy, confections, snacks)"
@@ -217,14 +216,15 @@ def classify_row(row):
             result = {**result, "explanation": result["explanation"] + val_warning}
         return pd.Series(result)
     except Exception as e:
+        msg = f"Classification failed: {type(e).__name__}: {str(e)}"
         return pd.Series({
             "hs6": ERROR_CODE,
             "uk_code": ERROR_CODE,
             "confidence": 0.0,
-            "risk": RISK_AMBER,
+            "risk": RISK_RED if val >= HIGH_VALUE_THRESHOLD else RISK_AMBER,
             "duty": "TBD",
             "vat": "TBD",
-            "explanation": f"Classification failed: {type(e).__name__}: {str(e)}"[:250],
+            "explanation": (msg[:247] + "...") if len(msg) > 250 else msg,
         })
 
 
