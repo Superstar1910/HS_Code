@@ -1,4 +1,5 @@
 import functools
+import hashlib
 import math
 import re
 from collections import Counter
@@ -80,20 +81,22 @@ def _normalise_value(value) -> float:
 
 def classify_product(description, material, origin, category, value):
     """Normalise inputs then delegate to the cached implementation."""
+    v = _normalise_value(value)
     # Return a shallow copy so callers cannot mutate the lru_cache entry.
     return dict(_classify_product_cached(
         (description or "").strip().lower(),
         (material or "").strip().lower(),
         (origin or "").strip().upper(),
         (category or "").strip().lower(),
-        _normalise_value(value),
+        v >= HIGH_VALUE_THRESHOLD,
     ))
 
 
 @functools.lru_cache(maxsize=4096)
-def _classify_product_cached(desc, material_lower, origin_upper, category_lower, value):
-    # value is already rounded to pence and guaranteed finite by _normalise_value
-    high_value = value >= HIGH_VALUE_THRESHOLD
+def _classify_product_cached(desc, material_lower, origin_upper, category_lower, high_value):
+    # high_value is a bool; using it instead of the raw value means products that
+    # share the same description/material/origin/category and the same high-value
+    # status hit the same cache entry regardless of exact declared price.
     hv_note = " High declared value flagged for additional customs scrutiny." if high_value else ""
     origin_note = (
         f" Country of origin: {origin_upper}."
@@ -101,9 +104,17 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
         else " Warning: country of origin not declared — required for customs clearance."
     )
 
-    if (
-        _word_in_text("scarf", desc) or _word_in_text("scarves", desc)
-    ) and (_word_in_text("silk", material_lower) or _word_in_text("silk", desc)):
+    # Pre-compute all keyword flags once to avoid redundant regex evaluation.
+    is_scarf = _word_in_text("scarf", desc) or _word_in_text("scarves", desc)
+    is_silk = _word_in_text("silk", material_lower) or _word_in_text("silk", desc)
+    is_bag = _word_in_text("bag", desc) or _word_in_text("purse", desc) or category_lower == "bags"
+    is_leather = _word_in_text("leather", material_lower) or _word_in_text("leather", desc)
+    is_perfume = _word_in_text("perfume", desc) or "eau de parfum" in desc or category_lower == "beauty"
+    is_confectionery = any(_word_in_text(w, desc) for w in _CONFECTIONERY_WORDS)
+    is_food = category_lower == "food" or is_confectionery
+    is_fashion = category_lower == "fashion_accessories" or any(_word_in_text(w, desc) for w in _FASHION_WORDS)
+
+    if is_scarf and is_silk:
         return {
             "hs6": "621410",
             "uk_code": "6214100090",
@@ -113,10 +124,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "vat": "20%",
             "explanation": "Classified under silk scarves based on material composition and accessory type." + origin_note + hv_note,
         }
-    elif (
-        _word_in_text("bag", desc) or _word_in_text("purse", desc)
-        or category_lower == "bags"
-    ) and (_word_in_text("leather", material_lower) or _word_in_text("leather", desc)):
+    elif is_bag and is_leather:
         return {
             "hs6": "420221",
             "uk_code": "4202210000",
@@ -126,7 +134,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "vat": "20%",
             "explanation": "Classified under handbags with outer surface of leather." + origin_note + hv_note,
         }
-    elif _word_in_text("perfume", desc) or "eau de parfum" in desc or category_lower == "beauty":
+    elif is_perfume:
         return {
             "hs6": "330300",
             "uk_code": "3303001000",
@@ -136,8 +144,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "vat": "20%",
             "explanation": "Classified under perfumes and toilet waters; regulated cosmetics handling required." + origin_note + hv_note,
         }
-    elif category_lower == "food" or any(_word_in_text(w, desc) for w in _CONFECTIONERY_WORDS):
-        is_confectionery = any(_word_in_text(w, desc) for w in _CONFECTIONERY_WORDS)
+    elif is_food:
         food_vat = "20%" if is_confectionery else "0%"
         vat_note = (
             " Note: confectionery and snack products (e.g. chocolate, biscuits, candy, confections, snacks)"
@@ -157,9 +164,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
                 + vat_note + origin_note + hv_note
             ),
         }
-    elif category_lower == "fashion_accessories" or any(
-        _word_in_text(w, desc) for w in _FASHION_WORDS
-    ):
+    elif is_fashion:
         return {
             "hs6": "621790",
             "uk_code": "6217900000",
@@ -217,6 +222,8 @@ def classify_row(row):
         return pd.Series(result)
     except Exception as e:
         msg = f"Classification failed: {type(e).__name__}: {str(e)}"
+        truncated = (msg[:247] + "...") if len(msg) > 250 else msg
+        explanation = truncated + val_warning if val_warning else truncated
         return pd.Series({
             "hs6": ERROR_CODE,
             "uk_code": ERROR_CODE,
@@ -224,7 +231,7 @@ def classify_row(row):
             "risk": RISK_RED if val >= HIGH_VALUE_THRESHOLD else RISK_AMBER,
             "duty": "TBD",
             "vat": "TBD",
-            "explanation": (msg[:247] + "...") if len(msg) > 250 else msg,
+            "explanation": explanation,
         })
 
 
@@ -249,7 +256,7 @@ def _add_to_review_queue(result: dict):
         })
 
 
-def _process_bulk_upload(uploaded, file_id: Tuple[str, int]) -> None:
+def _process_bulk_upload(uploaded, file_id: Tuple[str, str]) -> None:
     """Validate, classify, and store results for a newly uploaded CSV.
 
     Uses return-on-error instead of st.stop() so the caller can still render
@@ -475,8 +482,10 @@ elif page == "Bulk Upload":
     if uploaded:
         # Only re-process when the file actually changes; guards against
         # re-classifying (and adding duplicate audit entries) on every rerun.
-        # Use (name, size) as a stable dedup key — both are public Streamlit API.
-        file_id = (uploaded.name, uploaded.size)
+        # MD5 of file contents is used as the dedup key so two different files
+        # with the same name and byte size are still treated as distinct.
+        raw_bytes = uploaded.getvalue()
+        file_id = (uploaded.name, hashlib.md5(raw_bytes).hexdigest())
         if st.session_state["_bulk_file_id"] != file_id:
             _process_bulk_upload(uploaded, file_id)
 
