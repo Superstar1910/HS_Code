@@ -111,7 +111,13 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     is_leather = _word_in_text("leather", material_lower) or _word_in_text("leather", desc)
     is_perfume = _word_in_text("perfume", desc) or "eau de parfum" in desc or category_lower == "beauty"
     is_confectionery = any(_word_in_text(w, desc) for w in _CONFECTIONERY_WORDS)
-    is_food = category_lower == "food" or is_confectionery
+    # Confectionery keywords only drive food classification when the category does
+    # not indicate a different product type; prevents "chocolate leather wallet"
+    # from being misclassified as food when category == "fashion_accessories".
+    _non_food_categories = {"bags", "beauty", "fashion_accessories"}
+    is_food = category_lower == "food" or (
+        is_confectionery and category_lower not in _non_food_categories
+    )
     is_fashion = category_lower == "fashion_accessories" or any(_word_in_text(w, desc) for w in _FASHION_WORDS)
 
     if is_scarf and is_silk:
@@ -221,7 +227,9 @@ def classify_row(row):
             result = {**result, "explanation": result["explanation"] + val_warning}
         return pd.Series(result)
     except Exception as e:
-        msg = f"Classification failed: {type(e).__name__}: {str(e)}"
+        row_idx = getattr(row, "name", None)
+        prefix = f"Row {row_idx}: " if row_idx is not None else ""
+        msg = f"{prefix}Classification failed: {type(e).__name__}: {str(e)}"
         truncated = (msg[:247] + "...") if len(msg) > 250 else msg
         explanation = truncated + val_warning if val_warning else truncated
         return pd.Series({
@@ -243,11 +251,11 @@ def _add_to_review_queue(result: dict):
     a genuine reclassification that produces a different code is still added.
     """
     safe_val = _normalise_value(result.get("value", 0.0))
-    key = (result["description"], safe_val, result["uk_code"])
+    key = (result.get("description", ""), safe_val, result.get("uk_code", ""))
     if key not in st.session_state["review_keys"]:
         st.session_state["review_keys"].add(key)
         st.session_state["review_items"].append({
-            "Product": result["description"],
+            "Product": result.get("description", ""),
             "Suggested Code": result["uk_code"],
             "Confidence": _format_confidence(result["confidence"]),
             "Explanation": result["explanation"],
@@ -266,6 +274,8 @@ def _process_bulk_upload(uploaded, file_id: Tuple[str, str]) -> None:
     # widgets elsewhere on the page) don't re-process the same file.
     st.session_state["_bulk_file_id"] = file_id
     st.session_state["_bulk_messages"] = []
+    # Reset stale results so a failed upload never shows the previous run's data.
+    st.session_state["bulk_result"] = None
     try:
         # Read one extra row so len(df) > 5000 can detect oversized files.
         df = pd.read_csv(uploaded, nrows=5001, encoding="utf-8-sig", encoding_errors="replace")
@@ -488,6 +498,12 @@ elif page == "Bulk Upload":
         file_id = (uploaded.name, hashlib.md5(raw_bytes).hexdigest())
         if st.session_state["_bulk_file_id"] != file_id:
             _process_bulk_upload(uploaded, file_id)
+    else:
+        # File was removed — clear messages and results so previous state
+        # does not bleed into a fresh upload attempt.
+        st.session_state["_bulk_messages"] = []
+        st.session_state["bulk_result"] = None
+        st.session_state["_bulk_file_id"] = None
 
     for _level, _msg in st.session_state["_bulk_messages"]:
         if _level == "error":
