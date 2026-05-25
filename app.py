@@ -1,9 +1,9 @@
 import functools
 import hashlib
+import io
 import math
 import re
 from collections import Counter
-from typing import Tuple
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -44,8 +44,11 @@ RESULT_COLUMNS = frozenset({"hs6", "uk_code", "confidence", "risk", "duty", "vat
 ERROR_CODE = "ERROR"
 UNCLASSIFIED_CODE = "UNCLASSIFIED"
 
+# Categories that suppress food classification even when confectionery keywords match
+_NON_FOOD_CATEGORIES = frozenset({"bags", "beauty", "fashion_accessories"})
 
-def _parse_value(raw) -> Tuple[float, str]:
+
+def _parse_value(raw) -> tuple[float, str]:
     """Convert raw value to (normalised_float, warning_message).
 
     The warning is non-empty only when the raw input was absent or invalid
@@ -114,9 +117,8 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     # Confectionery keywords only drive food classification when the category does
     # not indicate a different product type; prevents "chocolate leather wallet"
     # from being misclassified as food when category == "fashion_accessories".
-    _non_food_categories = {"bags", "beauty", "fashion_accessories"}
     is_food = category_lower == "food" or (
-        is_confectionery and category_lower not in _non_food_categories
+        is_confectionery and category_lower not in _NON_FOOD_CATEGORIES
     )
     is_fashion = category_lower == "fashion_accessories" or any(_word_in_text(w, desc) for w in _FASHION_WORDS)
 
@@ -264,9 +266,11 @@ def _add_to_review_queue(result: dict):
         })
 
 
-def _process_bulk_upload(uploaded, file_id: Tuple[str, str]) -> None:
+def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, str]) -> None:
     """Validate, classify, and store results for a newly uploaded CSV.
 
+    Accepts raw bytes so the function is independent of the UploadedFile
+    cursor position and can be called without side-effects on the file object.
     Uses return-on-error instead of st.stop() so the caller can still render
     any previously stored bulk results after a failed upload attempt.
     """
@@ -278,7 +282,7 @@ def _process_bulk_upload(uploaded, file_id: Tuple[str, str]) -> None:
     st.session_state["bulk_result"] = None
     try:
         # Read one extra row so len(df) > 5000 can detect oversized files.
-        df = pd.read_csv(uploaded, nrows=5001, encoding="utf-8-sig", encoding_errors="replace")
+        df = pd.read_csv(io.BytesIO(file_bytes), nrows=5001, encoding="utf-8-sig", encoding_errors="replace")
         df.columns = df.columns.str.strip().str.lower()
         # Warn if any cell contains U+FFFD (the Unicode replacement character),
         # which indicates bytes that could not be decoded from the file's encoding.
@@ -338,12 +342,12 @@ def _process_bulk_upload(uploaded, file_id: Tuple[str, str]) -> None:
         summary += f" ({', '.join(detail_parts)})"
     st.session_state["audit_log"].append({
         "Timestamp": datetime.now().isoformat(timespec="microseconds"),
-        "Event": f"Bulk upload: {summary} from '{uploaded.name}'",
+        "Event": f"Bulk upload: {summary} from '{filename}'",
     })
     st.session_state["bulk_result"] = {
         "df": result_df,
         "summary": summary,
-        "filename": uploaded.name,
+        "filename": filename,
     }
 
     for row in result_df.to_dict("records"):
@@ -495,9 +499,9 @@ elif page == "Bulk Upload":
         # MD5 of file contents is used as the dedup key so two different files
         # with the same name and byte size are still treated as distinct.
         raw_bytes = uploaded.getvalue()
-        file_id = (uploaded.name, hashlib.md5(raw_bytes).hexdigest())
+        file_id = (uploaded.name, hashlib.md5(raw_bytes, usedforsecurity=False).hexdigest())
         if st.session_state["_bulk_file_id"] != file_id:
-            _process_bulk_upload(uploaded, file_id)
+            _process_bulk_upload(raw_bytes, uploaded.name, file_id)
     else:
         # File was removed — clear messages and results so previous state
         # does not bleed into a fresh upload attempt.
