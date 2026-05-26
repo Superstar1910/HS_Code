@@ -8,8 +8,8 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 
-_CONFECTIONERY_WORDS = ("chocolate", "biscuit", "biscuits", "candy", "confection", "confections", "snack", "snacks")
-_FASHION_WORDS = ("belt", "wallet", "glove", "hat", "cap", "tie", "brooch")
+_CONFECTIONERY_WORDS = ("chocolate", "chocolates", "biscuit", "biscuits", "candy", "candies", "confection", "confections", "snack", "snacks")
+_FASHION_WORDS = ("belt", "belts", "wallet", "wallets", "glove", "gloves", "hat", "hats", "cap", "caps", "tie", "ties", "brooch", "brooches")
 
 
 @functools.lru_cache(maxsize=None)
@@ -110,9 +110,18 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     # Pre-compute all keyword flags once to avoid redundant regex evaluation.
     is_scarf = _word_in_text("scarf", desc) or _word_in_text("scarves", desc)
     is_silk = _word_in_text("silk", material_lower) or _word_in_text("silk", desc)
-    is_bag = _word_in_text("bag", desc) or _word_in_text("purse", desc) or category_lower == "bags"
+    is_bag = (
+        _word_in_text("bag", desc) or _word_in_text("bags", desc)
+        or _word_in_text("handbag", desc) or _word_in_text("handbags", desc)
+        or _word_in_text("purse", desc) or _word_in_text("purses", desc)
+        or category_lower == "bags"
+    )
     is_leather = _word_in_text("leather", material_lower) or _word_in_text("leather", desc)
-    is_perfume = _word_in_text("perfume", desc) or "eau de parfum" in desc or category_lower == "beauty"
+    is_perfume = (
+        _word_in_text("perfume", desc) or _word_in_text("perfumes", desc)
+        or "eau de parfum" in desc
+        or category_lower == "beauty"
+    )
     is_confectionery = any(_word_in_text(w, desc) for w in _CONFECTIONERY_WORDS)
     # Confectionery keywords only drive food classification when the category does
     # not indicate a different product type; prevents "chocolate leather wallet"
@@ -206,6 +215,8 @@ def _safe_str(v) -> str:
     """Convert a value to string, returning empty string for NaN/None."""
     if v is None:
         return ""
+    if isinstance(v, str):
+        return v
     try:
         if pd.isna(v):
             return ""
