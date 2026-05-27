@@ -9,7 +9,11 @@ import pandas as pd
 from datetime import datetime
 
 _CONFECTIONERY_WORDS = ("chocolate", "chocolates", "biscuit", "biscuits", "candy", "candies", "confection", "confections", "snack", "snacks")
-_FASHION_WORDS = ("belt", "belts", "wallet", "wallets", "glove", "gloves", "hat", "hats", "cap", "caps", "tie", "ties", "brooch", "brooches")
+_FASHION_WORDS = (
+    "belt", "belts", "wallet", "wallets", "glove", "gloves",
+    "hat", "hats", "cap", "caps", "tie", "ties",
+    "brooch", "brooches", "scarf", "scarves",
+)
 
 
 @functools.lru_cache(maxsize=None)
@@ -114,12 +118,22 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
         _word_in_text("bag", desc) or _word_in_text("bags", desc)
         or _word_in_text("handbag", desc) or _word_in_text("handbags", desc)
         or _word_in_text("purse", desc) or _word_in_text("purses", desc)
+        or _word_in_text("tote", desc) or _word_in_text("totes", desc)
+        or _word_in_text("clutch", desc) or _word_in_text("satchel", desc)
+        or _word_in_text("backpack", desc) or _word_in_text("backpacks", desc)
+        or _word_in_text("rucksack", desc) or _word_in_text("rucksacks", desc)
+        or _word_in_text("briefcase", desc) or _word_in_text("briefcases", desc)
         or category_lower == "bags"
     )
     is_leather = _word_in_text("leather", material_lower) or _word_in_text("leather", desc)
     is_perfume = (
         _word_in_text("perfume", desc) or _word_in_text("perfumes", desc)
+        or _word_in_text("fragrance", desc) or _word_in_text("fragrances", desc)
+        or _word_in_text("cologne", desc) or _word_in_text("colognes", desc)
+        or _word_in_text("aftershave", desc)
         or "eau de parfum" in desc
+        or "eau de toilette" in desc
+        or "eau de cologne" in desc
         or category_lower == "beauty"
     )
     is_confectionery = any(_word_in_text(w, desc) for w in _CONFECTIONERY_WORDS)
