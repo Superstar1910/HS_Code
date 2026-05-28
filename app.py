@@ -8,6 +8,8 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 
+st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
+
 _CONFECTIONERY_WORDS = ("chocolate", "chocolates", "biscuit", "biscuits", "candy", "candies", "confection", "confections", "snack", "snacks")
 _FASHION_WORDS = (
     "belt", "belts", "wallet", "wallets", "glove", "gloves",
@@ -24,9 +26,6 @@ def _word_pattern(word: str) -> re.Pattern:
 def _word_in_text(word: str, text: str) -> bool:
     """Return True if word appears as a whole word in text."""
     return bool(_word_pattern(word).search(text))
-
-
-st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
 
 # Threshold above which items attract additional customs scrutiny
 HIGH_VALUE_THRESHOLD = 1000.00
@@ -165,6 +164,16 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "vat": "20%",
             "explanation": "Classified under handbags with outer surface of leather." + origin_note + hv_note,
         }
+    elif is_bag:
+        return {
+            "hs6": "420229",
+            "uk_code": "4202290000",
+            "confidence": 0.65,
+            "risk": RISK_RED if high_value else RISK_AMBER,
+            "duty": "3.7%",
+            "vat": "20%",
+            "explanation": "Classified under handbags with other outer surface; verify material composition for precise subheading." + origin_note + hv_note,
+        }
     elif is_perfume:
         return {
             "hs6": "330300",
@@ -255,7 +264,8 @@ def classify_row(row):
         return pd.Series(result)
     except Exception as e:
         row_idx = getattr(row, "name", None)
-        prefix = f"Row {row_idx}: " if row_idx is not None else ""
+        display_idx = (row_idx + 1) if isinstance(row_idx, int) else row_idx
+        prefix = f"Row {display_idx}: " if display_idx is not None else ""
         msg = f"{prefix}Classification failed: {type(e).__name__}: {str(e)}"
         truncated = (msg[:247] + "...") if len(msg) > 250 else msg
         explanation = truncated + val_warning if val_warning else truncated
@@ -311,7 +321,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         df.columns = df.columns.str.strip().str.lower()
         # Warn if any cell contains U+FFFD (the Unicode replacement character),
         # which indicates bytes that could not be decoded from the file's encoding.
-        str_cols = df.select_dtypes(include=["object"])
+        str_cols = df.select_dtypes(include=["object", "string"])
         if not str_cols.empty and str_cols.apply(
             lambda col: col.astype(str).str.contains("�", regex=False).any()
         ).any():
@@ -542,11 +552,19 @@ elif page == "Bulk Upload":
 
     bulk = st.session_state["bulk_result"]
     if bulk is not None:
-        st.success(bulk["summary"])
-        st.dataframe(bulk["df"], use_container_width=True)
+        result_df = bulk["df"]
+        error_rows = int((result_df["hs6"] == ERROR_CODE).sum())
+        unclassified_rows = int((result_df["hs6"] == UNCLASSIFIED_CODE).sum())
+        if error_rows == len(result_df):
+            st.error(bulk["summary"])
+        elif error_rows + unclassified_rows > 0:
+            st.warning(bulk["summary"])
+        else:
+            st.success(bulk["summary"])
+        st.dataframe(result_df, use_container_width=True)
         st.download_button(
             "Download Results CSV",
-            data=bulk["df"].to_csv(index=False).encode("utf-8-sig"),
+            data=result_df.to_csv(index=False).encode("utf-8-sig"),
             file_name="hs_classification_results.csv",
             mime="text/csv",
         )
