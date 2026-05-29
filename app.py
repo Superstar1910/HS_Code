@@ -16,6 +16,12 @@ _FASHION_WORDS = (
     "hat", "hats", "cap", "caps", "tie", "ties",
     "brooch", "brooches", "scarf", "scarves",
 )
+_BAG_WORDS = (
+    "bag", "bags", "handbag", "handbags", "purse", "purses",
+    "tote", "totes", "clutch", "satchel",
+    "backpack", "backpacks", "rucksack", "rucksacks",
+    "briefcase", "briefcases",
+)
 
 
 @functools.lru_cache(maxsize=None)
@@ -47,8 +53,9 @@ RESULT_COLUMNS = frozenset({"hs6", "uk_code", "confidence", "risk", "duty", "vat
 ERROR_CODE = "ERROR"
 UNCLASSIFIED_CODE = "UNCLASSIFIED"
 
-# Categories that suppress food classification even when confectionery keywords match
-_NON_FOOD_CATEGORIES = frozenset({"bags", "beauty", "fashion_accessories"})
+# Categories that suppress food classification even when confectionery keywords match.
+# "other" is included because it signals an unrecognised category, not food.
+_NON_FOOD_CATEGORIES = frozenset({"bags", "beauty", "fashion_accessories", "other"})
 
 
 def _parse_value(raw) -> tuple[float, str]:
@@ -113,17 +120,6 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     # Pre-compute all keyword flags once to avoid redundant regex evaluation.
     is_scarf = _word_in_text("scarf", desc) or _word_in_text("scarves", desc)
     is_silk = _word_in_text("silk", material_lower) or _word_in_text("silk", desc)
-    is_bag = (
-        _word_in_text("bag", desc) or _word_in_text("bags", desc)
-        or _word_in_text("handbag", desc) or _word_in_text("handbags", desc)
-        or _word_in_text("purse", desc) or _word_in_text("purses", desc)
-        or _word_in_text("tote", desc) or _word_in_text("totes", desc)
-        or _word_in_text("clutch", desc) or _word_in_text("satchel", desc)
-        or _word_in_text("backpack", desc) or _word_in_text("backpacks", desc)
-        or _word_in_text("rucksack", desc) or _word_in_text("rucksacks", desc)
-        or _word_in_text("briefcase", desc) or _word_in_text("briefcases", desc)
-        or category_lower == "bags"
-    )
     is_leather = _word_in_text("leather", material_lower) or _word_in_text("leather", desc)
     is_perfume = (
         _word_in_text("perfume", desc) or _word_in_text("perfumes", desc)
@@ -143,6 +139,12 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
         is_confectionery and category_lower not in _NON_FOOD_CATEGORIES
     )
     is_fashion = category_lower == "fashion_accessories" or any(_word_in_text(w, desc) for w in _FASHION_WORDS)
+    # Bag detection: keyword match always fires; category="bags" only fires when
+    # description keywords do not indicate a fashion accessory, preventing items
+    # like belts or scarves from being misrouted to bag HS codes due to a
+    # miscategorised or imprecise category field.
+    _bag_keyword = any(_word_in_text(w, desc) for w in _BAG_WORDS)
+    is_bag = _bag_keyword or (category_lower == "bags" and not is_fashion)
 
     if is_scarf and is_silk:
         return {
@@ -283,22 +285,40 @@ def classify_row(row):
 def _add_to_review_queue(result: dict):
     """Add a classified item to the review queue if not already present.
 
-    Deduplicates on (description, value, uk_code) so that re-clicking the
-    button for the same product does not create duplicate queue entries, but
-    a genuine reclassification that produces a different code is still added.
+    Deduplicates on (description, high_value_flag, uk_code) so that re-clicking
+    the button for the same product does not create duplicate queue entries, but
+    a genuine reclassification that produces a different code or crosses the
+    high-value threshold (and thus a different risk rating) is still added.
     """
     safe_val = _normalise_value(result.get("value", 0.0))
-    key = (result.get("description", ""), safe_val, result.get("uk_code", ""))
+    # Use the high-value boolean rather than the raw amount: classification only
+    # distinguishes values by whether they meet HIGH_VALUE_THRESHOLD, so two
+    # sub-threshold prices for the same product produce the same classification
+    # and should map to the same dedup key.
+    key = (result.get("description", ""), safe_val >= HIGH_VALUE_THRESHOLD, result.get("uk_code", ""))
     if key not in st.session_state["review_keys"]:
         st.session_state["review_keys"].add(key)
         st.session_state["review_items"].append({
             "Product": result.get("description", ""),
-            "Suggested Code": result["uk_code"],
-            "Confidence": _format_confidence(result["confidence"]),
-            "Explanation": result["explanation"],
-            "Risk": result["risk"],
+            "Suggested Code": result.get("uk_code", UNCLASSIFIED_CODE),
+            "Confidence": _format_confidence(result.get("confidence", 0.0)),
+            "Explanation": result.get("explanation", ""),
+            "Risk": result.get("risk", RISK_AMBER),
             "Status": STATUS_PENDING,
         })
+
+
+def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_icon: str) -> None:
+    """Set all pending review-queue items to new_status and log the action."""
+    ts = datetime.now().isoformat(timespec="microseconds")
+    count = 0
+    for item in st.session_state["review_items"]:
+        if item["Status"] == STATUS_PENDING:
+            item["Status"] = new_status
+            count += 1
+    st.session_state["audit_log"].append({"Timestamp": ts, "Event": audit_event.format(count=count)})
+    st.toast(toast_msg.format(count=count), icon=toast_icon)
+    st.rerun()
 
 
 def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, str]) -> None:
@@ -585,32 +605,20 @@ elif page == "Review Queue":
         col1, col2 = st.columns(2)
 
         if col1.button("Approve All"):
-            ts = datetime.now().isoformat(timespec="microseconds")
-            count = 0
-            for item in st.session_state["review_items"]:
-                if item["Status"] == STATUS_PENDING:
-                    item["Status"] = STATUS_APPROVED
-                    count += 1
-            st.session_state["audit_log"].append({
-                "Timestamp": ts,
-                "Event": f"Review Queue: {count} pending item(s) approved in bulk",
-            })
-            st.toast(f"{count} pending item(s) marked as approved.", icon="✅")
-            st.rerun()
+            _apply_bulk_review(
+                STATUS_APPROVED,
+                "Review Queue: {count} pending item(s) approved in bulk",
+                "{count} pending item(s) marked as approved.",
+                "✅",
+            )
 
         if col2.button("Override All"):
-            ts = datetime.now().isoformat(timespec="microseconds")
-            count = 0
-            for item in st.session_state["review_items"]:
-                if item["Status"] == STATUS_PENDING:
-                    item["Status"] = STATUS_OVERRIDDEN
-                    count += 1
-            st.session_state["audit_log"].append({
-                "Timestamp": ts,
-                "Event": f"Review Queue: {count} pending item(s) flagged for analyst override in bulk",
-            })
-            st.toast(f"{count} pending item(s) flagged for analyst override.", icon="⚠️")
-            st.rerun()
+            _apply_bulk_review(
+                STATUS_OVERRIDDEN,
+                "Review Queue: {count} pending item(s) flagged for analyst override in bulk",
+                "{count} pending item(s) flagged for analyst override.",
+                "⚠️",
+            )
     else:
         st.info("No items in the review queue. Classify a product first or use Bulk Upload.")
 
