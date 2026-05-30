@@ -121,9 +121,12 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     is_scarf = _word_in_text("scarf", desc) or _word_in_text("scarves", desc)
     is_silk = _word_in_text("silk", material_lower) or _word_in_text("silk", desc)
     is_leather = _word_in_text("leather", material_lower) or _word_in_text("leather", desc)
+    # "fragrance-free" explicitly negates the product being a fragrance;
+    # guard against \bfragrance\b matching that compound adjective.
     is_perfume = (
         _word_in_text("perfume", desc) or _word_in_text("perfumes", desc)
-        or _word_in_text("fragrance", desc) or _word_in_text("fragrances", desc)
+        or ("fragrance-free" not in desc
+            and (_word_in_text("fragrance", desc) or _word_in_text("fragrances", desc)))
         or _word_in_text("cologne", desc) or _word_in_text("colognes", desc)
         or _word_in_text("aftershave", desc)
         or "eau de parfum" in desc
@@ -139,12 +142,13 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
         is_confectionery and category_lower not in _NON_FOOD_CATEGORIES
     )
     is_fashion = category_lower == "fashion_accessories" or any(_word_in_text(w, desc) for w in _FASHION_WORDS)
-    # Bag detection: keyword match always fires; category="bags" only fires when
-    # description keywords do not indicate a fashion accessory, preventing items
-    # like belts or scarves from being misrouted to bag HS codes due to a
+    # Bag detection: an explicit fashion_accessories category overrides bag keywords
+    # (a "handbag charm" is an accessory, not a bag); category="bags" only fires
+    # when description keywords do not indicate a fashion accessory, preventing
+    # items like belts or scarves from being misrouted to bag HS codes due to a
     # miscategorised or imprecise category field.
     _bag_keyword = any(_word_in_text(w, desc) for w in _BAG_WORDS)
-    is_bag = _bag_keyword or (category_lower == "bags" and not is_fashion)
+    is_bag = (_bag_keyword and category_lower != "fashion_accessories") or (category_lower == "bags" and not is_fashion)
 
     if is_scarf and is_silk:
         return {
@@ -266,11 +270,14 @@ def classify_row(row):
         return pd.Series(result)
     except Exception as e:
         row_idx = getattr(row, "name", None)
-        display_idx = (row_idx + 1) if isinstance(row_idx, int) else row_idx
+        # hasattr(__index__) covers both Python int and numpy integer scalars.
+        display_idx = (row_idx + 1) if hasattr(row_idx, "__index__") else row_idx
         prefix = f"Row {display_idx}: " if display_idx is not None else ""
         msg = f"{prefix}Classification failed: {type(e).__name__}: {str(e)}"
-        truncated = (msg[:247] + "...") if len(msg) > 250 else msg
-        explanation = truncated + val_warning if val_warning else truncated
+        suffix = val_warning or ""
+        msg_budget = 250 - len(suffix)
+        truncated = (msg[:msg_budget - 3] + "...") if len(msg) > msg_budget else msg
+        explanation = truncated + suffix
         return pd.Series({
             "hs6": ERROR_CODE,
             "uk_code": ERROR_CODE,
@@ -314,6 +321,10 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
     count = 0
     for item in st.session_state["review_items"]:
         if item["Status"] == STATUS_PENDING:
+            # Never auto-approve items with no assigned code; they require manual
+            # code entry, not a sign-off.
+            if new_status == STATUS_APPROVED and item.get("Suggested Code") == UNCLASSIFIED_CODE:
+                continue
             item["Status"] = new_status
             count += 1
     st.session_state["audit_log"].append({"Timestamp": ts, "Event": audit_event.format(count=count)})
@@ -343,7 +354,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         # which indicates bytes that could not be decoded from the file's encoding.
         str_cols = df.select_dtypes(include=["object", "string"])
         if not str_cols.empty and str_cols.apply(
-            lambda col: col.astype(str).str.contains("�", regex=False).any()
+            lambda col: col.str.contains("�", regex=False, na=False).any()
         ).any():
             st.session_state["_bulk_messages"].append(("warning", (
                 "Some characters in the CSV could not be decoded and have been "
