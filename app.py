@@ -121,12 +121,14 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     is_scarf = _word_in_text("scarf", desc) or _word_in_text("scarves", desc)
     is_silk = _word_in_text("silk", material_lower) or _word_in_text("silk", desc)
     is_leather = _word_in_text("leather", material_lower) or _word_in_text("leather", desc)
-    # "fragrance-free" explicitly negates the product being a fragrance;
-    # guard against \bfragrance\b matching that compound adjective.
+    # "fragrance-free" / "fragrance free" negate the product being a fragrance.
+    # Only the singular \bfragrance\b is guarded; the plural \bfragrances\b is an
+    # unambiguous positive signal even when the phrase also appears.
+    _fragrance_free = "fragrance-free" in desc or "fragrance free" in desc
     is_perfume = (
         _word_in_text("perfume", desc) or _word_in_text("perfumes", desc)
-        or ("fragrance-free" not in desc
-            and (_word_in_text("fragrance", desc) or _word_in_text("fragrances", desc)))
+        or _word_in_text("fragrances", desc)
+        or (not _fragrance_free and _word_in_text("fragrance", desc))
         or _word_in_text("cologne", desc) or _word_in_text("colognes", desc)
         or _word_in_text("aftershave", desc)
         or "eau de parfum" in desc
@@ -270,8 +272,9 @@ def classify_row(row):
         return pd.Series(result)
     except Exception as e:
         row_idx = getattr(row, "name", None)
-        # hasattr(__index__) covers both Python int and numpy integer scalars.
-        display_idx = (row_idx + 1) if hasattr(row_idx, "__index__") else row_idx
+        # hasattr(__index__) covers Python int and numpy integer scalars;
+        # exclude bool explicitly because bool subclasses int and has __index__.
+        display_idx = (row_idx + 1) if (hasattr(row_idx, "__index__") and not isinstance(row_idx, bool)) else row_idx
         prefix = f"Row {display_idx}: " if display_idx is not None else ""
         msg = f"{prefix}Classification failed: {type(e).__name__}: {str(e)}"
         suffix = val_warning or ""
