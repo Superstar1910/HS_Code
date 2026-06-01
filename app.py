@@ -121,19 +121,27 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     is_scarf = _word_in_text("scarf", desc) or _word_in_text("scarves", desc)
     is_silk = _word_in_text("silk", material_lower) or _word_in_text("silk", desc)
     is_leather = _word_in_text("leather", material_lower) or _word_in_text("leather", desc)
-    # "fragrance-free" explicitly negates the product being a fragrance;
-    # guard against \bfragrance\b matching that compound adjective.
+    # "fragrance-free" in description or material explicitly negates the product being
+    # a fragrance; guard against \bfragrance\b matching that compound adjective.
+    # Fragrance is checked in both desc and material_lower for consistency with how
+    # is_silk and is_leather inspect both fields (e.g. "alcohol base and fragrance
+    # compounds" in material correctly triggers perfume classification).
+    # category_lower == "beauty" is intentionally NOT included: it is too broad and
+    # would misclassify all cosmetics (face creams, lipstick, etc.) as perfumes.
+    _fragrance_free = "fragrance-free" in desc or "fragrance-free" in material_lower
     is_perfume = (
         _word_in_text("perfume", desc) or _word_in_text("perfumes", desc)
-        or ("fragrance-free" not in desc
-            and (_word_in_text("fragrance", desc) or _word_in_text("fragrances", desc)))
+        or (not _fragrance_free
+            and (_word_in_text("fragrance", desc) or _word_in_text("fragrances", desc)
+                 or _word_in_text("fragrance", material_lower) or _word_in_text("fragrances", material_lower)))
         or _word_in_text("cologne", desc) or _word_in_text("colognes", desc)
         or _word_in_text("aftershave", desc)
         or "eau de parfum" in desc
         or "eau de toilette" in desc
         or "eau de cologne" in desc
-        or category_lower == "beauty"
     )
+    # Non-fragrance beauty products (skincare, make-up, etc.) fall here.
+    is_cosmetics = category_lower == "beauty" and not is_perfume
     is_confectionery = any(_word_in_text(w, desc) for w in _CONFECTIONERY_WORDS)
     # Confectionery keywords only drive food classification when the category does
     # not indicate a different product type; prevents "chocolate leather wallet"
@@ -189,6 +197,16 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "duty": "6.5%",
             "vat": "20%",
             "explanation": "Classified under perfumes and toilet waters; regulated cosmetics handling required." + origin_note + hv_note,
+        }
+    elif is_cosmetics:
+        return {
+            "hs6": "330499",
+            "uk_code": "3304990000",
+            "confidence": 0.68,
+            "risk": RISK_RED if high_value else RISK_AMBER,
+            "duty": "6.5%",
+            "vat": "20%",
+            "explanation": "Classified under beauty and make-up preparations; verify specific subheading for product type (e.g. lip, eye, skin care)." + origin_note + hv_note,
         }
     elif is_food:
         food_vat = "20%" if is_confectionery else "0%"
