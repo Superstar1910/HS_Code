@@ -133,12 +133,12 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
         _word_in_text("perfume", desc) or _word_in_text("perfumes", desc)
         or (not _fragrance_free
             and (_word_in_text("fragrance", desc) or _word_in_text("fragrances", desc)
-                 or _word_in_text("fragrance", material_lower) or _word_in_text("fragrances", material_lower)))
-        or _word_in_text("cologne", desc) or _word_in_text("colognes", desc)
-        or _word_in_text("aftershave", desc)
-        or "eau de parfum" in desc
-        or "eau de toilette" in desc
-        or "eau de cologne" in desc
+                 or _word_in_text("fragrance", material_lower) or _word_in_text("fragrances", material_lower)
+                 or _word_in_text("cologne", desc) or _word_in_text("colognes", desc)
+                 or _word_in_text("aftershave", desc)
+                 or "eau de parfum" in desc
+                 or "eau de toilette" in desc
+                 or "eau de cologne" in desc))
     )
     # Non-fragrance beauty products (skincare, make-up, etc.) fall here.
     is_cosmetics = category_lower == "beauty" and not is_perfume
@@ -292,7 +292,7 @@ def classify_row(row):
         display_idx = (row_idx + 1) if hasattr(row_idx, "__index__") else row_idx
         prefix = f"Row {display_idx}: " if display_idx is not None else ""
         msg = f"{prefix}Classification failed: {type(e).__name__}: {str(e)}"
-        suffix = val_warning or ""
+        suffix = val_warning
         msg_budget = 250 - len(suffix)
         truncated = (msg[:msg_budget - 3] + "...") if len(msg) > msg_budget else msg
         explanation = truncated + suffix
