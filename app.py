@@ -121,16 +121,18 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     is_scarf = _word_in_text("scarf", desc) or _word_in_text("scarves", desc)
     is_silk = _word_in_text("silk", material_lower) or _word_in_text("silk", desc)
     is_leather = _word_in_text("leather", material_lower) or _word_in_text("leather", desc)
-    # "fragrance-free" in description or material explicitly negates the product being
-    # a fragrance; guard against \bfragrance\b matching that compound adjective.
+    # "fragrance-free"/"perfume-free" in description or material explicitly negates
+    # the product being a fragrance; guard against \bfragrance\b / \bperfume\b
+    # matching those compound adjectives (hyphen creates a word boundary).
     # Fragrance is checked in both desc and material_lower for consistency with how
     # is_silk and is_leather inspect both fields (e.g. "alcohol base and fragrance
     # compounds" in material correctly triggers perfume classification).
     # category_lower == "beauty" is intentionally NOT included: it is too broad and
     # would misclassify all cosmetics (face creams, lipstick, etc.) as perfumes.
     _fragrance_free = "fragrance-free" in desc or "fragrance-free" in material_lower
+    _perfume_free = "perfume-free" in desc or "perfume-free" in material_lower
     is_perfume = (
-        _word_in_text("perfume", desc) or _word_in_text("perfumes", desc)
+        (not _perfume_free and (_word_in_text("perfume", desc) or _word_in_text("perfumes", desc)))
         or (not _fragrance_free
             and (_word_in_text("fragrance", desc) or _word_in_text("fragrances", desc)
                  or _word_in_text("fragrance", material_lower) or _word_in_text("fragrances", material_lower)
@@ -293,7 +295,7 @@ def classify_row(row):
         prefix = f"Row {display_idx}: " if display_idx is not None else ""
         msg = f"{prefix}Classification failed: {type(e).__name__}: {str(e)}"
         suffix = val_warning
-        msg_budget = 250 - len(suffix)
+        msg_budget = max(10, 250 - len(suffix))
         truncated = (msg[:msg_budget - 3] + "...") if len(msg) > msg_budget else msg
         explanation = truncated + suffix
         return pd.Series({
@@ -320,7 +322,7 @@ def _add_to_review_queue(result: dict):
     # distinguishes values by whether they meet HIGH_VALUE_THRESHOLD, so two
     # sub-threshold prices for the same product produce the same classification
     # and should map to the same dedup key.
-    key = (result.get("description", ""), safe_val >= HIGH_VALUE_THRESHOLD, result.get("uk_code", ""))
+    key = (result.get("description", "").strip().lower(), safe_val >= HIGH_VALUE_THRESHOLD, result.get("uk_code", ""))
     if key not in st.session_state["review_keys"]:
         st.session_state["review_keys"].add(key)
         st.session_state["review_items"].append({
@@ -665,5 +667,11 @@ elif page == "Audit Trail":
             .reset_index(drop=True)
         )
         st.dataframe(logs, use_container_width=True)
+        st.download_button(
+            "Download Audit Log CSV",
+            data=logs.to_csv(index=False).encode("utf-8-sig"),
+            file_name="audit_log.csv",
+            mime="text/csv",
+        )
     else:
         st.info("No audit events recorded yet.")
