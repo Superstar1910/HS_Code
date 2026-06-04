@@ -121,9 +121,9 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     is_scarf = _word_in_text("scarf", desc) or _word_in_text("scarves", desc)
     is_silk = _word_in_text("silk", material_lower) or _word_in_text("silk", desc)
     is_leather = _word_in_text("leather", material_lower) or _word_in_text("leather", desc)
-    # "fragrance-free"/"perfume-free" in description or material explicitly negates
-    # the product being a fragrance; guard against \bfragrance\b / \bperfume\b
-    # matching those compound adjectives (hyphen creates a word boundary).
+    # Either "fragrance-free" or "perfume-free" in description or material negates
+    # the product being a fragrance/perfume; both flags suppress ALL perfume signals
+    # (including cologne, aftershave, eau-de) not just the keyword they name.
     # Fragrance is checked in both desc and material_lower for consistency with how
     # is_silk and is_leather inspect both fields (e.g. "alcohol base and fragrance
     # compounds" in material correctly triggers perfume classification).
@@ -131,16 +131,15 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     # would misclassify all cosmetics (face creams, lipstick, etc.) as perfumes.
     _fragrance_free = "fragrance-free" in desc or "fragrance-free" in material_lower
     _perfume_free = "perfume-free" in desc or "perfume-free" in material_lower
-    is_perfume = (
-        (not _perfume_free and (_word_in_text("perfume", desc) or _word_in_text("perfumes", desc)))
-        or (not _fragrance_free
-            and (_word_in_text("fragrance", desc) or _word_in_text("fragrances", desc)
-                 or _word_in_text("fragrance", material_lower) or _word_in_text("fragrances", material_lower)
-                 or _word_in_text("cologne", desc) or _word_in_text("colognes", desc)
-                 or _word_in_text("aftershave", desc)
-                 or "eau de parfum" in desc
-                 or "eau de toilette" in desc
-                 or "eau de cologne" in desc))
+    is_perfume = not (_fragrance_free or _perfume_free) and (
+        _word_in_text("perfume", desc) or _word_in_text("perfumes", desc)
+        or _word_in_text("fragrance", desc) or _word_in_text("fragrances", desc)
+        or _word_in_text("fragrance", material_lower) or _word_in_text("fragrances", material_lower)
+        or _word_in_text("cologne", desc) or _word_in_text("colognes", desc)
+        or _word_in_text("aftershave", desc)
+        or "eau de parfum" in desc
+        or "eau de toilette" in desc
+        or "eau de cologne" in desc
     )
     # Non-fragrance beauty products (skincare, make-up, etc.) fall here.
     is_cosmetics = category_lower == "beauty" and not is_perfume
@@ -439,12 +438,12 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     for row in result_df.to_dict("records"):
         if row.get("hs6") != ERROR_CODE:
             _add_to_review_queue({
-                "description": str(row.get("description", "")),
+                "description": _safe_str(row.get("description", "")),
                 "value": row.get("value", 0.0),
-                "uk_code": str(row.get("uk_code", "")),
+                "uk_code": _safe_str(row.get("uk_code", "")),
                 "confidence": row.get("confidence", 0.0),
-                "explanation": str(row.get("explanation", "")),
-                "risk": str(row.get("risk", RISK_AMBER)),
+                "explanation": _safe_str(row.get("explanation", "")),
+                "risk": _safe_str(row.get("risk")) or RISK_AMBER,
             })
 
 
