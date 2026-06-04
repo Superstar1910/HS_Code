@@ -54,8 +54,8 @@ ERROR_CODE = "ERROR"
 UNCLASSIFIED_CODE = "UNCLASSIFIED"
 
 # Categories that suppress food classification even when confectionery keywords match.
-# "other" is included because it signals an unrecognised category, not food.
-_NON_FOOD_CATEGORIES = frozenset({"bags", "beauty", "fashion_accessories", "other"})
+# "other" and "" are included because they signal an unrecognised category, not food.
+_NON_FOOD_CATEGORIES = frozenset({"bags", "beauty", "fashion_accessories", "other", ""})
 
 
 def _parse_value(raw) -> tuple[float, str]:
@@ -129,8 +129,14 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     # compounds" in material correctly triggers perfume classification).
     # category_lower == "beauty" is intentionally NOT included: it is too broad and
     # would misclassify all cosmetics (face creams, lipstick, etc.) as perfumes.
-    _fragrance_free = "fragrance-free" in desc or "fragrance-free" in material_lower
-    _perfume_free = "perfume-free" in desc or "perfume-free" in material_lower
+    _fragrance_free = (
+        "fragrance-free" in desc or "fragrance free" in desc
+        or "fragrance-free" in material_lower or "fragrance free" in material_lower
+    )
+    _perfume_free = (
+        "perfume-free" in desc or "perfume free" in desc
+        or "perfume-free" in material_lower or "perfume free" in material_lower
+    )
     is_perfume = not (_fragrance_free or _perfume_free) and (
         _word_in_text("perfume", desc) or _word_in_text("perfumes", desc)
         or _word_in_text("fragrance", desc) or _word_in_text("fragrances", desc)
@@ -340,9 +346,9 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
     count = 0
     for item in st.session_state["review_items"]:
         if item["Status"] == STATUS_PENDING:
-            # Never auto-approve items with no assigned code; they require manual
-            # code entry, not a sign-off.
-            if new_status == STATUS_APPROVED and item.get("Suggested Code") == UNCLASSIFIED_CODE:
+            # Never bulk-action items with no assigned code; they require manual
+            # code entry before either approval or override.
+            if item.get("Suggested Code") == UNCLASSIFIED_CODE:
                 continue
             item["Status"] = new_status
             count += 1
