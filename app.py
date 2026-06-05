@@ -11,6 +11,10 @@ from datetime import datetime
 st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
 
 _CONFECTIONERY_WORDS = ("chocolate", "chocolates", "biscuit", "biscuits", "candy", "candies", "confection", "confections", "snack", "snacks")
+
+# Pre-compiled regex for stripping currency symbols and thousands separators from
+# string values before float parsing — handles £/$€¥₹ prefixes and comma separators.
+_VALUE_STRIP_RE = re.compile(r'[£$€¥₹,\s]')
 _FASHION_WORDS = (
     "belt", "belts", "wallet", "wallets", "glove", "gloves",
     "hat", "hats", "cap", "caps", "tie", "ties",
@@ -29,6 +33,7 @@ def _word_pattern(word: str) -> re.Pattern:
     return re.compile(r'\b' + re.escape(word) + r'\b')
 
 
+@functools.lru_cache(maxsize=4096)
 def _word_in_text(word: str, text: str) -> bool:
     """Return True if word appears as a whole word in text."""
     return bool(_word_pattern(word).search(text))
@@ -63,7 +68,16 @@ def _parse_value(raw) -> tuple[float, str]:
 
     The warning is non-empty only when the raw input was absent or invalid
     and has been defaulted to 0.0.
+    Handles common CSV formats such as "£1,250.00", "$500", "1,000.50".
     """
+    # Strip currency symbols, thousands-separator commas, and whitespace from
+    # string values before attempting float conversion.  Only apply when the
+    # stripped result is non-empty so a bare symbol (e.g. "£") still falls
+    # through to the error branch rather than silently becoming 0.0.
+    if isinstance(raw, str):
+        preprocessed = _VALUE_STRIP_RE.sub('', raw)
+        if preprocessed:
+            raw = preprocessed
     try:
         v = float(raw)
     except (TypeError, ValueError):
@@ -139,6 +153,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     )
     is_perfume = not (_fragrance_free or _perfume_free) and (
         _word_in_text("perfume", desc) or _word_in_text("perfumes", desc)
+        or _word_in_text("perfume", material_lower) or _word_in_text("perfumes", material_lower)
         or _word_in_text("fragrance", desc) or _word_in_text("fragrances", desc)
         or _word_in_text("fragrance", material_lower) or _word_in_text("fragrances", material_lower)
         or _word_in_text("cologne", desc) or _word_in_text("colognes", desc)
