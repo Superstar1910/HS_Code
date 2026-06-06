@@ -14,7 +14,7 @@ _CONFECTIONERY_WORDS = ("chocolate", "chocolates", "biscuit", "biscuits", "candy
 
 # Pre-compiled regex for stripping currency symbols and thousands separators from
 # string values before float parsing — handles £/$€¥₹ prefixes and comma separators.
-_VALUE_STRIP_RE = re.compile(r'[£$€¥₹,\s]')
+_VALUE_STRIP_RE = re.compile(r'[£$€¥₹,]')
 _FASHION_WORDS = (
     "belt", "belts", "wallet", "wallets", "glove", "gloves",
     "hat", "hats", "cap", "caps", "tie", "ties",
@@ -33,7 +33,6 @@ def _word_pattern(word: str) -> re.Pattern:
     return re.compile(r'\b' + re.escape(word) + r'\b')
 
 
-@functools.lru_cache(maxsize=4096)
 def _word_in_text(word: str, text: str) -> bool:
     """Return True if word appears as a whole word in text."""
     return bool(_word_pattern(word).search(text))
@@ -75,7 +74,7 @@ def _parse_value(raw) -> tuple[float, str]:
     # stripped result is non-empty so a bare symbol (e.g. "£") still falls
     # through to the error branch rather than silently becoming 0.0.
     if isinstance(raw, str):
-        preprocessed = _VALUE_STRIP_RE.sub('', raw)
+        preprocessed = _VALUE_STRIP_RE.sub('', raw.strip())
         if preprocessed:
             raw = preprocessed
     try:
@@ -144,12 +143,12 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     # category_lower == "beauty" is intentionally NOT included: it is too broad and
     # would misclassify all cosmetics (face creams, lipstick, etc.) as perfumes.
     _fragrance_free = (
-        "fragrance-free" in desc or "fragrance free" in desc
-        or "fragrance-free" in material_lower or "fragrance free" in material_lower
+        _word_in_text("fragrance-free", desc) or _word_in_text("fragrance free", desc)
+        or _word_in_text("fragrance-free", material_lower) or _word_in_text("fragrance free", material_lower)
     )
     _perfume_free = (
-        "perfume-free" in desc or "perfume free" in desc
-        or "perfume-free" in material_lower or "perfume free" in material_lower
+        _word_in_text("perfume-free", desc) or _word_in_text("perfume free", desc)
+        or _word_in_text("perfume-free", material_lower) or _word_in_text("perfume free", material_lower)
     )
     is_perfume = not (_fragrance_free or _perfume_free) and (
         _word_in_text("perfume", desc) or _word_in_text("perfumes", desc)
@@ -157,10 +156,11 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
         or _word_in_text("fragrance", desc) or _word_in_text("fragrances", desc)
         or _word_in_text("fragrance", material_lower) or _word_in_text("fragrances", material_lower)
         or _word_in_text("cologne", desc) or _word_in_text("colognes", desc)
-        or _word_in_text("aftershave", desc)
-        or "eau de parfum" in desc
-        or "eau de toilette" in desc
-        or "eau de cologne" in desc
+        or _word_in_text("cologne", material_lower) or _word_in_text("colognes", material_lower)
+        or _word_in_text("aftershave", desc) or _word_in_text("aftershave", material_lower)
+        or "eau de parfum" in desc or "eau de parfum" in material_lower
+        or "eau de toilette" in desc or "eau de toilette" in material_lower
+        or "eau de cologne" in desc or "eau de cologne" in material_lower
     )
     # Non-fragrance beauty products (skincare, make-up, etc.) fall here.
     is_cosmetics = category_lower == "beauty" and not is_perfume
