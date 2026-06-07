@@ -22,7 +22,7 @@ _FASHION_WORDS = (
 )
 _BAG_WORDS = (
     "bag", "bags", "handbag", "handbags", "purse", "purses",
-    "tote", "totes", "clutch", "satchel",
+    "tote", "totes", "clutch", "clutches", "satchel", "satchels",
     "backpack", "backpacks", "rucksack", "rucksacks",
     "briefcase", "briefcases",
 )
@@ -157,10 +157,14 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
         or _word_in_text("fragrance", material_lower) or _word_in_text("fragrances", material_lower)
         or _word_in_text("cologne", desc) or _word_in_text("colognes", desc)
         or _word_in_text("cologne", material_lower) or _word_in_text("colognes", material_lower)
-        or _word_in_text("aftershave", desc) or _word_in_text("aftershave", material_lower)
+        or _word_in_text("aftershave", desc) or _word_in_text("aftershaves", desc)
+        or _word_in_text("aftershave", material_lower) or _word_in_text("aftershaves", material_lower)
         or "eau de parfum" in desc or "eau de parfum" in material_lower
         or "eau de toilette" in desc or "eau de toilette" in material_lower
         or "eau de cologne" in desc or "eau de cologne" in material_lower
+        or "eau-de-parfum" in desc or "eau-de-parfum" in material_lower
+        or "eau-de-toilette" in desc or "eau-de-toilette" in material_lower
+        or "eau-de-cologne" in desc or "eau-de-cologne" in material_lower
     )
     # Non-fragrance beauty products (skincare, make-up, etc.) fall here.
     is_cosmetics = category_lower == "beauty" and not is_perfume
@@ -367,7 +371,8 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
                 continue
             item["Status"] = new_status
             count += 1
-    st.session_state["audit_log"].append({"Timestamp": ts, "Event": audit_event.format(count=count)})
+    if count > 0:
+        st.session_state["audit_log"].append({"Timestamp": ts, "Event": audit_event.format(count=count)})
     st.toast(toast_msg.format(count=count), icon=toast_icon)
     st.rerun()
 
@@ -562,6 +567,11 @@ elif page == "Classify":
     if st.session_state["last_result"] is not None:
         r = st.session_state["last_result"]
         st.subheader("Classification Result")
+        if r["hs6"] == UNCLASSIFIED_CODE:
+            st.warning(
+                "Could not assign an HS code from the information provided. "
+                "Refine the product description or manually assign a commodity code before shipment."
+            )
         a, b, c = st.columns(3)
         a.metric("HS6", r["hs6"])
         b.metric("UK Commodity Code", r["uk_code"])
