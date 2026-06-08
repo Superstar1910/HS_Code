@@ -12,9 +12,8 @@ st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
 
 _CONFECTIONERY_WORDS = ("chocolate", "chocolates", "biscuit", "biscuits", "candy", "candies", "confection", "confections", "snack", "snacks")
 
-# Pre-compiled regex for stripping currency symbols and thousands separators from
-# string values before float parsing — handles £/$€¥₹ prefixes and comma separators.
-_VALUE_STRIP_RE = re.compile(r'[£$€¥₹,]')
+# Pre-compiled regex for stripping currency symbol prefixes before float parsing.
+_VALUE_STRIP_RE = re.compile(r'[£$€¥₹]')
 _FASHION_WORDS = (
     "belt", "belts", "wallet", "wallets", "glove", "gloves",
     "hat", "hats", "cap", "caps", "tie", "ties",
@@ -69,14 +68,16 @@ def _parse_value(raw) -> tuple[float, str]:
     and has been defaulted to 0.0.
     Handles common CSV formats such as "£1,250.00", "$500", "1,000.50".
     """
-    # Strip currency symbols, thousands-separator commas, and whitespace from
-    # string values before attempting float conversion.  Only apply when the
-    # stripped result is non-empty so a bare symbol (e.g. "£") still falls
-    # through to the error branch rather than silently becoming 0.0.
     if isinstance(raw, str):
-        preprocessed = _VALUE_STRIP_RE.sub('', raw.strip())
-        if preprocessed:
-            raw = preprocessed
+        s = _VALUE_STRIP_RE.sub('', raw.strip())
+        # Detect European decimal format: comma followed by 1–2 digits at end
+        # (e.g. "1.250,00" → "1250.00"). Otherwise treat commas as UK/US thousands
+        # separators (e.g. "1,250.00" → "1250.00").
+        if re.search(r',\d{1,2}$', s):
+            s = s.replace('.', '').replace(',', '.')
+        else:
+            s = s.replace(',', '')
+        raw = s
     try:
         v = float(raw)
     except (TypeError, ValueError):
@@ -159,12 +160,12 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
         or _word_in_text("cologne", material_lower) or _word_in_text("colognes", material_lower)
         or _word_in_text("aftershave", desc) or _word_in_text("aftershaves", desc)
         or _word_in_text("aftershave", material_lower) or _word_in_text("aftershaves", material_lower)
-        or "eau de parfum" in desc or "eau de parfum" in material_lower
-        or "eau de toilette" in desc or "eau de toilette" in material_lower
-        or "eau de cologne" in desc or "eau de cologne" in material_lower
-        or "eau-de-parfum" in desc or "eau-de-parfum" in material_lower
-        or "eau-de-toilette" in desc or "eau-de-toilette" in material_lower
-        or "eau-de-cologne" in desc or "eau-de-cologne" in material_lower
+        or _word_in_text("eau de parfum", desc) or _word_in_text("eau de parfum", material_lower)
+        or _word_in_text("eau de toilette", desc) or _word_in_text("eau de toilette", material_lower)
+        or _word_in_text("eau de cologne", desc) or _word_in_text("eau de cologne", material_lower)
+        or _word_in_text("eau-de-parfum", desc) or _word_in_text("eau-de-parfum", material_lower)
+        or _word_in_text("eau-de-toilette", desc) or _word_in_text("eau-de-toilette", material_lower)
+        or _word_in_text("eau-de-cologne", desc) or _word_in_text("eau-de-cologne", material_lower)
     )
     # Non-fragrance beauty products (skincare, make-up, etc.) fall here.
     is_cosmetics = category_lower == "beauty" and not is_perfume
@@ -373,7 +374,9 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
             count += 1
     if count > 0:
         st.session_state["audit_log"].append({"Timestamp": ts, "Event": audit_event.format(count=count)})
-    st.toast(toast_msg.format(count=count), icon=toast_icon)
+        st.toast(toast_msg.format(count=count), icon=toast_icon)
+    else:
+        st.toast("No pending items to action — unclassified items require manual code assignment.", icon="ℹ️")
     st.rerun()
 
 
