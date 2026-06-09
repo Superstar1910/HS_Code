@@ -26,6 +26,24 @@ _BAG_WORDS = (
     "briefcase", "briefcases",
 )
 
+# Pre-compiled alternation patterns for keyword groups — avoids calling _word_in_text
+# in a loop for every candidate keyword on each classification call.
+_CONFECTIONERY_RE = re.compile(
+    r'\b(?:' + '|'.join(re.escape(w) for w in _CONFECTIONERY_WORDS) + r')\b'
+)
+_FASHION_RE = re.compile(
+    r'\b(?:' + '|'.join(re.escape(w) for w in _FASHION_WORDS) + r')\b'
+)
+_BAG_RE = re.compile(
+    r'\b(?:' + '|'.join(re.escape(w) for w in _BAG_WORDS) + r')\b'
+)
+_FRAGRANCE_FREE_RE = re.compile(r'\bfragrance[- ]free\b')
+_PERFUME_FREE_RE = re.compile(r'\bperfume[- ]free\b')
+_PERFUME_RE = re.compile(
+    r'\b(?:perfumes?|fragrances?|colognes?|aftershaves?'
+    r'|eau[ -]de[ -](?:parfum|toilette|cologne))\b'
+)
+
 
 @functools.lru_cache(maxsize=None)
 def _word_pattern(word: str) -> re.Pattern:
@@ -70,6 +88,8 @@ def _parse_value(raw) -> tuple[float, str]:
     """
     if isinstance(raw, str):
         s = _VALUE_STRIP_RE.sub('', raw.strip())
+        if not s:
+            return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
         # Detect European decimal format: comma followed by 1–2 digits at end
         # (e.g. "1.250,00" → "1250.00"). Otherwise treat commas as UK/US thousands
         # separators (e.g. "1,250.00" → "1250.00").
@@ -143,46 +163,31 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     # compounds" in material correctly triggers perfume classification).
     # category_lower == "beauty" is intentionally NOT included: it is too broad and
     # would misclassify all cosmetics (face creams, lipstick, etc.) as perfumes.
-    _fragrance_free = (
-        _word_in_text("fragrance-free", desc) or _word_in_text("fragrance free", desc)
-        or _word_in_text("fragrance-free", material_lower) or _word_in_text("fragrance free", material_lower)
+    _fragrance_free = bool(
+        _FRAGRANCE_FREE_RE.search(desc) or _FRAGRANCE_FREE_RE.search(material_lower)
     )
-    _perfume_free = (
-        _word_in_text("perfume-free", desc) or _word_in_text("perfume free", desc)
-        or _word_in_text("perfume-free", material_lower) or _word_in_text("perfume free", material_lower)
+    _perfume_free = bool(
+        _PERFUME_FREE_RE.search(desc) or _PERFUME_FREE_RE.search(material_lower)
     )
-    is_perfume = not (_fragrance_free or _perfume_free) and (
-        _word_in_text("perfume", desc) or _word_in_text("perfumes", desc)
-        or _word_in_text("perfume", material_lower) or _word_in_text("perfumes", material_lower)
-        or _word_in_text("fragrance", desc) or _word_in_text("fragrances", desc)
-        or _word_in_text("fragrance", material_lower) or _word_in_text("fragrances", material_lower)
-        or _word_in_text("cologne", desc) or _word_in_text("colognes", desc)
-        or _word_in_text("cologne", material_lower) or _word_in_text("colognes", material_lower)
-        or _word_in_text("aftershave", desc) or _word_in_text("aftershaves", desc)
-        or _word_in_text("aftershave", material_lower) or _word_in_text("aftershaves", material_lower)
-        or _word_in_text("eau de parfum", desc) or _word_in_text("eau de parfum", material_lower)
-        or _word_in_text("eau de toilette", desc) or _word_in_text("eau de toilette", material_lower)
-        or _word_in_text("eau de cologne", desc) or _word_in_text("eau de cologne", material_lower)
-        or _word_in_text("eau-de-parfum", desc) or _word_in_text("eau-de-parfum", material_lower)
-        or _word_in_text("eau-de-toilette", desc) or _word_in_text("eau-de-toilette", material_lower)
-        or _word_in_text("eau-de-cologne", desc) or _word_in_text("eau-de-cologne", material_lower)
+    is_perfume = not (_fragrance_free or _perfume_free) and bool(
+        _PERFUME_RE.search(desc) or _PERFUME_RE.search(material_lower)
     )
     # Non-fragrance beauty products (skincare, make-up, etc.) fall here.
     is_cosmetics = category_lower == "beauty" and not is_perfume
-    is_confectionery = any(_word_in_text(w, desc) for w in _CONFECTIONERY_WORDS)
+    is_confectionery = bool(_CONFECTIONERY_RE.search(desc))
     # Confectionery keywords only drive food classification when the category does
     # not indicate a different product type; prevents "chocolate leather wallet"
     # from being misclassified as food when category == "fashion_accessories".
     is_food = category_lower == "food" or (
         is_confectionery and category_lower not in _NON_FOOD_CATEGORIES
     )
-    is_fashion = category_lower == "fashion_accessories" or any(_word_in_text(w, desc) for w in _FASHION_WORDS)
+    is_fashion = category_lower == "fashion_accessories" or bool(_FASHION_RE.search(desc))
     # Bag detection: an explicit fashion_accessories category overrides bag keywords
     # (a "handbag charm" is an accessory, not a bag); category="bags" only fires
     # when description keywords do not indicate a fashion accessory, preventing
     # items like belts or scarves from being misrouted to bag HS codes due to a
     # miscategorised or imprecise category field.
-    _bag_keyword = any(_word_in_text(w, desc) for w in _BAG_WORDS)
+    _bag_keyword = bool(_BAG_RE.search(desc))
     is_bag = (_bag_keyword and category_lower != "fashion_accessories") or (category_lower == "bags" and not is_fashion)
 
     if is_scarf and is_silk:
