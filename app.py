@@ -37,8 +37,8 @@ _FASHION_RE = re.compile(
 _BAG_RE = re.compile(
     r'\b(?:' + '|'.join(re.escape(w) for w in _BAG_WORDS) + r')\b'
 )
-_FRAGRANCE_FREE_RE = re.compile(r'\bfragrance[- ]free\b')
-_PERFUME_FREE_RE = re.compile(r'\bperfume[- ]free\b')
+_FREE_MARKER_RE = re.compile(r'\b(?:fragrance|perfume)[- ]free\b')
+_EURO_DECIMAL_RE = re.compile(r',\d{1,2}$')
 _PERFUME_RE = re.compile(
     r'\b(?:perfumes?|fragrances?|colognes?|aftershaves?'
     r'|eau[ -]de[ -](?:parfum|toilette|cologne))\b'
@@ -93,7 +93,7 @@ def _parse_value(raw) -> tuple[float, str]:
         # Detect European decimal format: comma followed by 1–2 digits at end
         # (e.g. "1.250,00" → "1250.00"). Otherwise treat commas as UK/US thousands
         # separators (e.g. "1,250.00" → "1250.00").
-        if re.search(r',\d{1,2}$', s):
+        if _EURO_DECIMAL_RE.search(s):
             s = s.replace('.', '').replace(',', '.')
         else:
             s = s.replace(',', '')
@@ -163,13 +163,10 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     # compounds" in material correctly triggers perfume classification).
     # category_lower == "beauty" is intentionally NOT included: it is too broad and
     # would misclassify all cosmetics (face creams, lipstick, etc.) as perfumes.
-    _fragrance_free = bool(
-        _FRAGRANCE_FREE_RE.search(desc) or _FRAGRANCE_FREE_RE.search(material_lower)
+    _free_marker = bool(
+        _FREE_MARKER_RE.search(desc) or _FREE_MARKER_RE.search(material_lower)
     )
-    _perfume_free = bool(
-        _PERFUME_FREE_RE.search(desc) or _PERFUME_FREE_RE.search(material_lower)
-    )
-    is_perfume = not (_fragrance_free or _perfume_free) and bool(
+    is_perfume = not _free_marker and bool(
         _PERFUME_RE.search(desc) or _PERFUME_RE.search(material_lower)
     )
     # Non-fragrance beauty products (skincare, make-up, etc.) fall here.
@@ -306,8 +303,9 @@ def _safe_str(v) -> str:
 
 def classify_row(row):
     """Apply classify_product to a DataFrame row; safe for use with df.apply()."""
-    val, val_warning = _parse_value(row.get("value"))
+    val, val_warning = 0.0, ""
     try:
+        val, val_warning = _parse_value(row.get("value"))
         result = classify_product(
             _safe_str(row.get("description", "")),
             _safe_str(row.get("material", "")),
@@ -380,9 +378,9 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
     if count > 0:
         st.session_state["audit_log"].append({"Timestamp": ts, "Event": audit_event.format(count=count)})
         st.toast(toast_msg.format(count=count), icon=toast_icon)
+        st.rerun()
     else:
         st.toast("No pending items to action — unclassified items require manual code assignment.", icon="ℹ️")
-    st.rerun()
 
 
 def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, str]) -> None:
@@ -470,7 +468,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     }
 
     for row in result_df.to_dict("records"):
-        if row.get("hs6") != ERROR_CODE:
+        if row.get("hs6") not in (ERROR_CODE, UNCLASSIFIED_CODE):
             _add_to_review_queue({
                 "description": _safe_str(row.get("description", "")),
                 "value": row.get("value", 0.0),
@@ -560,7 +558,8 @@ elif page == "Classify":
                     **result,
                 }
                 st.session_state["last_result"] = entry
-                _add_to_review_queue(entry)
+                if result.get("hs6") != UNCLASSIFIED_CODE:
+                    _add_to_review_queue(entry)
                 st.session_state["audit_log"].append({
                     "Timestamp": entry["timestamp"],
                     "Event": f'"{entry["description"]}" classified as {entry["uk_code"]} (risk: {entry["risk"]})',
