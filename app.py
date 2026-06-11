@@ -26,8 +26,7 @@ _BAG_WORDS = (
     "briefcase", "briefcases",
 )
 
-# Pre-compiled alternation patterns for keyword groups — avoids calling _word_in_text
-# in a loop for every candidate keyword on each classification call.
+# Pre-compiled alternation patterns for keyword groups used in classification.
 _CONFECTIONERY_RE = re.compile(
     r'\b(?:' + '|'.join(re.escape(w) for w in _CONFECTIONERY_WORDS) + r')\b'
 )
@@ -37,22 +36,15 @@ _FASHION_RE = re.compile(
 _BAG_RE = re.compile(
     r'\b(?:' + '|'.join(re.escape(w) for w in _BAG_WORDS) + r')\b'
 )
-_FREE_MARKER_RE = re.compile(r'\b(?:fragrance|perfume)[- ]free\b')
+_FREE_MARKER_RE = re.compile(r'\b(?:fragrance|perfume)[-–— ]free\b')
 _EURO_DECIMAL_RE = re.compile(r',\d{1,2}$')
 _PERFUME_RE = re.compile(
     r'\b(?:perfumes?|fragrances?|colognes?|aftershaves?'
     r'|eau[ -]de[ -](?:parfum|toilette|cologne))\b'
 )
-
-
-@functools.lru_cache(maxsize=None)
-def _word_pattern(word: str) -> re.Pattern:
-    return re.compile(r'\b' + re.escape(word) + r'\b')
-
-
-def _word_in_text(word: str, text: str) -> bool:
-    """Return True if word appears as a whole word in text."""
-    return bool(_word_pattern(word).search(text))
+_SCARF_RE = re.compile(r'\b(?:scarf|scarves)\b')
+_SILK_RE = re.compile(r'\bsilk\b')
+_LEATHER_RE = re.compile(r'\bleather\b')
 
 # Threshold above which items attract additional customs scrutiny
 HIGH_VALUE_THRESHOLD = 1000.00
@@ -152,9 +144,9 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     )
 
     # Pre-compute all keyword flags once to avoid redundant regex evaluation.
-    is_scarf = _word_in_text("scarf", desc) or _word_in_text("scarves", desc)
-    is_silk = _word_in_text("silk", material_lower) or _word_in_text("silk", desc)
-    is_leather = _word_in_text("leather", material_lower) or _word_in_text("leather", desc)
+    is_scarf = bool(_SCARF_RE.search(desc))
+    is_silk = bool(_SILK_RE.search(material_lower)) or bool(_SILK_RE.search(desc))
+    is_leather = bool(_LEATHER_RE.search(material_lower)) or bool(_LEATHER_RE.search(desc))
     # Either "fragrance-free" or "perfume-free" in description or material negates
     # the product being a fragrance/perfume; both flags suppress ALL perfume signals
     # (including cologne, aftershave, eau-de) not just the keyword they name.
@@ -380,7 +372,21 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
         st.toast(toast_msg.format(count=count), icon=toast_icon)
         st.rerun()
     else:
-        st.toast("No pending items to action — unclassified items require manual code assignment.", icon="ℹ️")
+        unclassified_pending = sum(
+            1 for item in st.session_state["review_items"]
+            if item["Status"] == STATUS_PENDING
+        )
+        if unclassified_pending:
+            st.session_state["audit_log"].append({
+                "Timestamp": ts,
+                "Event": (
+                    f"Bulk action attempted: {unclassified_pending} pending item(s) skipped — "
+                    "all require manual code assignment before approval."
+                ),
+            })
+            st.toast("No pending items to action — unclassified items require manual code assignment.", icon="ℹ️")
+        else:
+            st.toast("No pending items in the review queue.", icon="ℹ️")
 
 
 def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, str]) -> None:
@@ -467,16 +473,16 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         "filename": filename,
     }
 
-    for row in result_df.to_dict("records"):
-        if row.get("hs6") not in (ERROR_CODE, UNCLASSIFIED_CODE):
-            _add_to_review_queue({
-                "description": _safe_str(row.get("description", "")),
-                "value": row.get("value", 0.0),
-                "uk_code": _safe_str(row.get("uk_code", "")),
-                "confidence": row.get("confidence", 0.0),
-                "explanation": _safe_str(row.get("explanation", "")),
-                "risk": _safe_str(row.get("risk")) or RISK_AMBER,
-            })
+    queueable_df = result_df[~result_df["hs6"].isin({ERROR_CODE, UNCLASSIFIED_CODE})]
+    for row in queueable_df.to_dict("records"):
+        _add_to_review_queue({
+            "description": _safe_str(row.get("description", "")),
+            "value": row.get("value", 0.0),
+            "uk_code": _safe_str(row.get("uk_code", "")),
+            "confidence": row.get("confidence", 0.0),
+            "explanation": _safe_str(row.get("explanation", "")),
+            "risk": _safe_str(row.get("risk")) or RISK_AMBER,
+        })
 
 
 # Initialise session state keys once so all pages can rely on them existing.
@@ -560,9 +566,13 @@ elif page == "Classify":
                 st.session_state["last_result"] = entry
                 if result.get("hs6") != UNCLASSIFIED_CODE:
                     _add_to_review_queue(entry)
+                if result.get("hs6") == UNCLASSIFIED_CODE:
+                    audit_event = f'"{entry["description"]}" could not be classified — manual code assignment required'
+                else:
+                    audit_event = f'"{entry["description"]}" classified as {entry["uk_code"]} (risk: {entry["risk"]})'
                 st.session_state["audit_log"].append({
                     "Timestamp": entry["timestamp"],
-                    "Event": f'"{entry["description"]}" classified as {entry["uk_code"]} (risk: {entry["risk"]})',
+                    "Event": audit_event,
                 })
 
     with right:
