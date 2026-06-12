@@ -564,11 +564,10 @@ elif page == "Classify":
                     **result,
                 }
                 st.session_state["last_result"] = entry
-                if result.get("hs6") != UNCLASSIFIED_CODE:
-                    _add_to_review_queue(entry)
                 if result.get("hs6") == UNCLASSIFIED_CODE:
                     audit_event = f'"{entry["description"]}" could not be classified — manual code assignment required'
                 else:
+                    _add_to_review_queue(entry)
                     audit_event = f'"{entry["description"]}" classified as {entry["uk_code"]} (risk: {entry["risk"]})'
                 st.session_state["audit_log"].append({
                     "Timestamp": entry["timestamp"],
@@ -635,7 +634,7 @@ elif page == "Bulk Upload":
         file_id = (uploaded.name, hashlib.md5(raw_bytes, usedforsecurity=False).hexdigest())
         if st.session_state["_bulk_file_id"] != file_id:
             _process_bulk_upload(raw_bytes, uploaded.name, file_id)
-    else:
+    elif st.session_state["_bulk_file_id"] is not None:
         # File was removed — clear messages and results so previous state
         # does not bleed into a fresh upload attempt.
         st.session_state["_bulk_messages"] = []
