@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import functools
 import hashlib
 import io
@@ -145,8 +147,16 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
 
     # Pre-compute all keyword flags once to avoid redundant regex evaluation.
     is_scarf = bool(_SCARF_RE.search(desc))
-    is_silk = bool(_SILK_RE.search(material_lower)) or bool(_SILK_RE.search(desc))
-    is_leather = bool(_LEATHER_RE.search(material_lower)) or bool(_LEATHER_RE.search(desc))
+    # Material is the authoritative source for composition.  Only fall back to
+    # description when the material field was not supplied, so that terms like
+    # "silk-effect polyester" or "leather-look PU" in a description do not
+    # trigger the silk/leather duty codes when the actual material differs.
+    is_silk = bool(_SILK_RE.search(material_lower)) or (
+        not material_lower and bool(_SILK_RE.search(desc))
+    )
+    is_leather = bool(_LEATHER_RE.search(material_lower)) or (
+        not material_lower and bool(_LEATHER_RE.search(desc))
+    )
     # Either "fragrance-free" or "perfume-free" in description or material negates
     # the product being a fragrance/perfume; both flags suppress ALL perfume signals
     # (including cologne, aftershave, eau-de) not just the keyword they name.
@@ -385,6 +395,7 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
                 ),
             })
             st.toast("No pending items to action — unclassified items require manual code assignment.", icon="ℹ️")
+            st.rerun()
         else:
             st.toast("No pending items in the review queue.", icon="ℹ️")
 
@@ -397,9 +408,6 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     Uses return-on-error instead of st.stop() so the caller can still render
     any previously stored bulk results after a failed upload attempt.
     """
-    # Mark the file as seen immediately so Streamlit reruns (triggered by
-    # widgets elsewhere on the page) don't re-process the same file.
-    st.session_state["_bulk_file_id"] = file_id
     st.session_state["_bulk_messages"] = []
     # Reset stale results so a failed upload never shows the previous run's data.
     st.session_state["bulk_result"] = None
@@ -472,6 +480,11 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         "summary": summary,
         "filename": filename,
     }
+
+    # Mark the file as processed only after successful classification so that a
+    # re-upload of the same bytes is not silently skipped when prior validation
+    # failed (e.g. missing columns, oversized file).
+    st.session_state["_bulk_file_id"] = file_id
 
     queueable_df = result_df[~result_df["hs6"].isin({ERROR_CODE, UNCLASSIFIED_CODE})]
     for row in queueable_df.to_dict("records"):
