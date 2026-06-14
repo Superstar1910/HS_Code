@@ -84,10 +84,12 @@ def _parse_value(raw) -> tuple[float, str]:
         s = _VALUE_STRIP_RE.sub('', raw.strip())
         if not s:
             return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
-        # Detect European decimal format: comma followed by 1–2 digits at end
-        # (e.g. "1.250,00" → "1250.00"). Otherwise treat commas as UK/US thousands
-        # separators (e.g. "1,250.00" → "1250.00").
-        if _EURO_DECIMAL_RE.search(s):
+        # Detect European decimal format: comma followed by 1–2 digits at end,
+        # with exactly one comma (e.g. "1.250,00" → "1250.00"). The single-comma
+        # guard prevents "1,250,00" (two commas, a common typo) from matching the
+        # Euro branch and producing the unparseable "1.250.00". Otherwise treat
+        # commas as UK/US thousands separators (e.g. "1,250.00" → "1250.00").
+        if _EURO_DECIMAL_RE.search(s) and s.count(',') == 1:
             s = s.replace('.', '').replace(',', '.')
         else:
             s = s.replace(',', '')
@@ -181,13 +183,15 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
         is_confectionery and category_lower not in _NON_FOOD_CATEGORIES
     )
     is_fashion = category_lower == "fashion_accessories" or bool(_FASHION_RE.search(desc))
-    # Bag detection: an explicit fashion_accessories category overrides bag keywords
-    # (a "handbag charm" is an accessory, not a bag); category="bags" only fires
-    # when description keywords do not indicate a fashion accessory, preventing
-    # items like belts or scarves from being misrouted to bag HS codes due to a
-    # miscategorised or imprecise category field.
+    # Bag detection: fashion_accessories and food categories override bag keywords.
+    # fashion_accessories: "handbag charm" is an accessory, not a bag.
+    # food: "chocolate gift bag" is food, not a handbag — without this guard the
+    # is_bag branch fires before is_food and produces an incorrect HS 4202 code.
+    # category="bags" only fires when description keywords do not indicate a fashion
+    # accessory, preventing items like belts or scarves from being misrouted to bag
+    # HS codes due to a miscategorised or imprecise category field.
     _bag_keyword = bool(_BAG_RE.search(desc))
-    is_bag = (_bag_keyword and category_lower != "fashion_accessories") or (category_lower == "bags" and not is_fashion)
+    is_bag = (_bag_keyword and category_lower not in {"fashion_accessories", "food"}) or (category_lower == "bags" and not is_fashion)
 
     if is_scarf and is_silk:
         return {
@@ -218,6 +222,16 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "duty": "3.7%",
             "vat": "20%",
             "explanation": "Classified under handbags with other outer surface; verify material composition for precise subheading." + origin_note + hv_note,
+        }
+    elif is_scarf:
+        return {
+            "hs6": "621490",
+            "uk_code": "6214900000",
+            "confidence": 0.72,
+            "risk": RISK_RED if high_value else RISK_GREEN,
+            "duty": "12%",
+            "vat": "20%",
+            "explanation": "Classified under scarves and similar articles (non-silk); verify fibre composition for precise subheading (wool: 621420, synthetic fibres: 621430, other fibres: 621490)." + origin_note + hv_note,
         }
     elif is_perfume:
         return {
@@ -395,7 +409,6 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
                 ),
             })
             st.toast("No pending items to action — unclassified items require manual code assignment.", icon="ℹ️")
-            st.rerun()
         else:
             st.toast("No pending items in the review queue.", icon="ℹ️")
 
@@ -419,11 +432,11 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         # which indicates bytes that could not be decoded from the file's encoding.
         str_cols = df.select_dtypes(include=["object", "string"])
         if not str_cols.empty and str_cols.apply(
-            lambda col: col.str.contains("�", regex=False, na=False).any()
+            lambda col: col.str.contains("\ufffd", regex=False, na=False).any()
         ).any():
             st.session_state["_bulk_messages"].append(("warning", (
                 "Some characters in the CSV could not be decoded and have been "
-                "replaced with �. Re-save the file as UTF-8 to ensure accurate "
+                "replaced with \ufffd. Re-save the file as UTF-8 to ensure accurate "
                 "classification."
             )))
     except pd.errors.ParserError:
@@ -506,12 +519,13 @@ st.session_state.setdefault("bulk_result", None)
 st.session_state.setdefault("_bulk_file_id", None)
 st.session_state.setdefault("_bulk_messages", [])
 st.session_state.setdefault("last_result", None)
-_today = datetime.now().strftime("%Y-%m-%d")
-st.session_state.setdefault("seed_logs", [
-    {"Timestamp": f"{_today}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
-    {"Timestamp": f"{_today}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
-    {"Timestamp": f"{_today}T09:18:00.000000", "Event": "Approved and published to product master"},
-])
+if "seed_logs" not in st.session_state:
+    _today = datetime.now().strftime("%Y-%m-%d")
+    st.session_state["seed_logs"] = [
+        {"Timestamp": f"{_today}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
+        {"Timestamp": f"{_today}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
+        {"Timestamp": f"{_today}T09:18:00.000000", "Event": "Approved and published to product master"},
+    ]
 
 st.sidebar.title("HS & Shipment Pre-Check")
 page = st.sidebar.radio("Navigate", ["Dashboard", "Classify", "Bulk Upload", "Review Queue", "Audit Trail"])
@@ -644,7 +658,7 @@ elif page == "Bulk Upload":
         # MD5 of file contents is used as the dedup key so two different files
         # with the same name and byte size are still treated as distinct.
         raw_bytes = uploaded.getvalue()
-        file_id = (uploaded.name, hashlib.md5(raw_bytes, usedforsecurity=False).hexdigest())
+        file_id = (uploaded.name, hashlib.md5(raw_bytes).hexdigest())
         if st.session_state["_bulk_file_id"] != file_id:
             _process_bulk_upload(raw_bytes, uploaded.name, file_id)
     elif st.session_state["_bulk_file_id"] is not None:
