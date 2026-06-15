@@ -360,7 +360,11 @@ def _add_to_review_queue(result: dict):
     the button for the same product does not create duplicate queue entries, but
     a genuine reclassification that produces a different code or crosses the
     high-value threshold (and thus a different risk rating) is still added.
+    Silently ignores ERROR and UNCLASSIFIED items — callers filter these, but
+    this guard prevents accidental queue corruption if called directly.
     """
+    if result.get("uk_code") in {ERROR_CODE, UNCLASSIFIED_CODE}:
+        return
     safe_val = _normalise_value(result.get("value", 0.0))
     # Use the high-value boolean rather than the raw amount: classification only
     # distinguishes values by whether they meet HIGH_VALUE_THRESHOLD, so two
@@ -382,35 +386,32 @@ def _add_to_review_queue(result: dict):
 def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_icon: str) -> None:
     """Set all pending review-queue items to new_status and log the action."""
     ts = datetime.now().isoformat(timespec="microseconds")
-    count = 0
+    changed = 0
+    skipped_unclassified = 0
     for item in st.session_state["review_items"]:
         if item["Status"] == STATUS_PENDING:
             # Never bulk-action items with no assigned code; they require manual
             # code entry before either approval or override.
             if item.get("Suggested Code") == UNCLASSIFIED_CODE:
+                skipped_unclassified += 1
                 continue
             item["Status"] = new_status
-            count += 1
-    if count > 0:
-        st.session_state["audit_log"].append({"Timestamp": ts, "Event": audit_event.format(count=count)})
-        st.toast(toast_msg.format(count=count), icon=toast_icon)
+            changed += 1
+    if changed > 0:
+        st.session_state["audit_log"].append({"Timestamp": ts, "Event": audit_event.format(count=changed)})
+        st.toast(toast_msg.format(count=changed), icon=toast_icon)
         st.rerun()
+    elif skipped_unclassified:
+        st.session_state["audit_log"].append({
+            "Timestamp": ts,
+            "Event": (
+                f"Bulk action attempted: {skipped_unclassified} pending item(s) skipped — "
+                "all require manual code assignment before approval."
+            ),
+        })
+        st.toast("No pending items to action — unclassified items require manual code assignment.", icon="ℹ️")
     else:
-        unclassified_pending = sum(
-            1 for item in st.session_state["review_items"]
-            if item["Status"] == STATUS_PENDING
-        )
-        if unclassified_pending:
-            st.session_state["audit_log"].append({
-                "Timestamp": ts,
-                "Event": (
-                    f"Bulk action attempted: {unclassified_pending} pending item(s) skipped — "
-                    "all require manual code assignment before approval."
-                ),
-            })
-            st.toast("No pending items to action — unclassified items require manual code assignment.", icon="ℹ️")
-        else:
-            st.toast("No pending items in the review queue.", icon="ℹ️")
+        st.toast("No pending items in the review queue.", icon="ℹ️")
 
 
 def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, str]) -> None:
