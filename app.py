@@ -398,7 +398,12 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
             item["Status"] = new_status
             changed += 1
     if changed > 0:
-        st.session_state["audit_log"].append({"Timestamp": ts, "Event": audit_event.format(count=changed)})
+        skipped_note = (
+            f"; {skipped_unclassified} unclassified item(s) skipped (require manual code assignment)"
+            if skipped_unclassified
+            else ""
+        )
+        st.session_state["audit_log"].append({"Timestamp": ts, "Event": audit_event.format(count=changed) + skipped_note})
         st.toast(toast_msg.format(count=changed), icon=toast_icon)
         st.rerun()
     elif skipped_unclassified:
@@ -469,8 +474,10 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     input_df = df.drop(columns=overlapping).reset_index(drop=True)
     try:
         with st.spinner(f"Classifying {len(input_df)} rows…"):
-            classified = input_df.apply(classify_row, axis=1).reset_index(drop=True)
-            result_df = pd.concat([input_df, classified], axis=1)
+            classified = pd.DataFrame(
+                [classify_row(row).to_dict() for _, row in input_df.iterrows()]
+            )
+            result_df = pd.concat([input_df.reset_index(drop=True), classified], axis=1)
     except Exception as e:
         st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
         return
@@ -495,11 +502,6 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         "filename": filename,
     }
 
-    # Mark the file as processed only after successful classification so that a
-    # re-upload of the same bytes is not silently skipped when prior validation
-    # failed (e.g. missing columns, oversized file).
-    st.session_state["_bulk_file_id"] = file_id
-
     queueable_df = result_df[~result_df["hs6"].isin({ERROR_CODE, UNCLASSIFIED_CODE})]
     for row in queueable_df.to_dict("records"):
         _add_to_review_queue({
@@ -510,6 +512,10 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             "explanation": _safe_str(row.get("explanation", "")),
             "risk": _safe_str(row.get("risk")) or RISK_AMBER,
         })
+    # Mark the file as processed only after ALL state (bulk_result + review queue)
+    # is updated. Moving this to the end ensures a failure during queue population
+    # allows re-uploading the same file rather than silently skipping it.
+    st.session_state["_bulk_file_id"] = file_id
 
 
 # Initialise session state keys once so all pages can rely on them existing.
