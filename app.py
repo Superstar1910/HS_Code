@@ -474,10 +474,8 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     input_df = df.drop(columns=overlapping).reset_index(drop=True)
     try:
         with st.spinner(f"Classifying {len(input_df)} rows…"):
-            classified = pd.DataFrame(
-                [classify_row(row).to_dict() for _, row in input_df.iterrows()]
-            )
-            result_df = pd.concat([input_df.reset_index(drop=True), classified], axis=1)
+            classified = input_df.apply(classify_row, axis=1)
+            result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
         st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
         return
