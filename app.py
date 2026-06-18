@@ -19,7 +19,7 @@ _VALUE_STRIP_RE = re.compile(r'[£$€¥₹]')
 _FASHION_WORDS = (
     "belt", "belts", "wallet", "wallets", "glove", "gloves",
     "hat", "hats", "cap", "caps", "tie", "ties",
-    "brooch", "brooches", "scarf", "scarves",
+    "brooch", "brooches",
 )
 _BAG_WORDS = (
     "bag", "bags", "handbag", "handbags", "purse", "purses",
@@ -486,8 +486,9 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     if unclassified_count:
         detail_parts.append(f"{unclassified_count} unclassified")
     if error_count:
-        detail_parts.append(f"{error_count} errors")
-    summary = f"Processed {len(result_df)} rows"
+        detail_parts.append(f"{error_count} error{'s' if error_count != 1 else ''}")
+    row_word = "row" if len(result_df) == 1 else "rows"
+    summary = f"Processed {len(result_df)} {row_word}"
     if detail_parts:
         summary += f" ({', '.join(detail_parts)})"
     st.session_state["audit_log"].append({
@@ -501,18 +502,21 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     }
 
     queueable_df = result_df[~result_df["hs6"].isin({ERROR_CODE, UNCLASSIFIED_CODE})]
-    for row in queueable_df.to_dict("records"):
-        _add_to_review_queue({
-            "description": _safe_str(row.get("description", "")),
-            "value": row.get("value", 0.0),
-            "uk_code": _safe_str(row.get("uk_code", "")),
-            "confidence": row.get("confidence", 0.0),
-            "explanation": _safe_str(row.get("explanation", "")),
-            "risk": _safe_str(row.get("risk")) or RISK_AMBER,
-        })
-    # Mark the file as processed only after ALL state (bulk_result + review queue)
-    # is updated. Moving this to the end ensures a failure during queue population
-    # allows re-uploading the same file rather than silently skipping it.
+    try:
+        for row in queueable_df.to_dict("records"):
+            _add_to_review_queue({
+                "description": _safe_str(row.get("description", "")),
+                "value": row.get("value", 0.0),
+                "uk_code": _safe_str(row.get("uk_code", "")),
+                "confidence": row.get("confidence", 0.0),
+                "explanation": _safe_str(row.get("explanation", "")),
+                "risk": _safe_str(row.get("risk")) or RISK_AMBER,
+            })
+    except Exception as e:
+        st.session_state["_bulk_messages"].append(("warning", f"Review queue could not be fully populated: {e}"))
+    # Mark the file as processed after state is updated. Set unconditionally so a
+    # partial queue failure does not trigger an infinite re-classification loop on
+    # subsequent reruns.
     st.session_state["_bulk_file_id"] = file_id
 
 
@@ -663,7 +667,7 @@ elif page == "Bulk Upload":
         # MD5 of file contents is used as the dedup key so two different files
         # with the same name and byte size are still treated as distinct.
         raw_bytes = uploaded.getvalue()
-        file_id = (uploaded.name, hashlib.md5(raw_bytes).hexdigest())
+        file_id = (uploaded.name, hashlib.md5(raw_bytes, usedforsecurity=False).hexdigest())
         if st.session_state["_bulk_file_id"] != file_id:
             _process_bulk_upload(raw_bytes, uploaded.name, file_id)
     elif st.session_state["_bulk_file_id"] is not None:
