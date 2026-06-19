@@ -392,14 +392,14 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
         if item["Status"] == STATUS_PENDING:
             # Never bulk-action items with no assigned code; they require manual
             # code entry before either approval or override.
-            if item.get("Suggested Code") == UNCLASSIFIED_CODE:
+            if item.get("Suggested Code") in {UNCLASSIFIED_CODE, ERROR_CODE}:
                 skipped_unclassified += 1
                 continue
             item["Status"] = new_status
             changed += 1
     if changed > 0:
         skipped_note = (
-            f"; {skipped_unclassified} unclassified item(s) skipped (require manual code assignment)"
+            f"; {skipped_unclassified} item(s) skipped (unclassified or errored — require manual code assignment)"
             if skipped_unclassified
             else ""
         )
@@ -411,10 +411,10 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
             "Timestamp": ts,
             "Event": (
                 f"Bulk action attempted: {skipped_unclassified} pending item(s) skipped — "
-                "all require manual code assignment before approval."
+                "all are unclassified or errored and require manual code assignment before approval."
             ),
         })
-        st.toast("No pending items to action — unclassified items require manual code assignment.", icon="ℹ️")
+        st.toast("No pending items to action — unclassified or errored items require manual code assignment.", icon="ℹ️")
     else:
         st.toast("No pending items in the review queue.", icon="ℹ️")
 
@@ -600,7 +600,9 @@ elif page == "Classify":
                     **result,
                 }
                 st.session_state["last_result"] = entry
-                if result.get("hs6") == UNCLASSIFIED_CODE:
+                if result.get("hs6") == ERROR_CODE:
+                    audit_event = f'"{entry["description"]}" classification error — manual review required'
+                elif result.get("hs6") == UNCLASSIFIED_CODE:
                     audit_event = f'"{entry["description"]}" could not be classified — manual code assignment required'
                 else:
                     _add_to_review_queue(entry)
@@ -667,7 +669,7 @@ elif page == "Bulk Upload":
         # MD5 of file contents is used as the dedup key so two different files
         # with the same name and byte size are still treated as distinct.
         raw_bytes = uploaded.getvalue()
-        file_id = (uploaded.name, hashlib.md5(raw_bytes, usedforsecurity=False).hexdigest())
+        file_id = (uploaded.name, hashlib.md5(raw_bytes).hexdigest())
         if st.session_state["_bulk_file_id"] != file_id:
             _process_bulk_upload(raw_bytes, uploaded.name, file_id)
     elif st.session_state["_bulk_file_id"] is not None:
@@ -742,18 +744,15 @@ elif page == "Audit Trail":
 
     session_logs = st.session_state["audit_log"]
     all_logs = seed_logs + session_logs
-    if all_logs:
-        logs = (
-            pd.DataFrame(all_logs)
-            .sort_values("Timestamp")
-            .reset_index(drop=True)
-        )
-        st.dataframe(logs, use_container_width=True)
-        st.download_button(
-            "Download Audit Log CSV",
-            data=logs.to_csv(index=False).encode("utf-8-sig"),
-            file_name="audit_log.csv",
-            mime="text/csv",
-        )
-    else:
-        st.info("No audit events recorded yet.")
+    logs = (
+        pd.DataFrame(all_logs)
+        .sort_values("Timestamp")
+        .reset_index(drop=True)
+    )
+    st.dataframe(logs, use_container_width=True)
+    st.download_button(
+        "Download Audit Log CSV",
+        data=logs.to_csv(index=False).encode("utf-8-sig"),
+        file_name="audit_log.csv",
+        mime="text/csv",
+    )
