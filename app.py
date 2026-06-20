@@ -589,28 +589,35 @@ elif page == "Classify":
                 desc_clean = description.strip()
                 mat_clean = material.strip()
                 orig_clean = origin.strip().upper()
-                result = classify_product(desc_clean, mat_clean, orig_clean, category, value)
-                entry = {
-                    "description": desc_clean,
-                    "material": mat_clean,
-                    "origin": orig_clean,
-                    "category": category,
-                    "value": value,
-                    "timestamp": datetime.now().isoformat(timespec="microseconds"),
-                    **result,
-                }
-                st.session_state["last_result"] = entry
-                if result.get("hs6") == ERROR_CODE:
-                    audit_event = f'"{entry["description"]}" classification error — manual review required'
-                elif result.get("hs6") == UNCLASSIFIED_CODE:
-                    audit_event = f'"{entry["description"]}" could not be classified — manual code assignment required'
+                ts = datetime.now().isoformat(timespec="microseconds")
+                try:
+                    result = classify_product(desc_clean, mat_clean, orig_clean, category, value)
+                except Exception as exc:
+                    st.session_state["audit_log"].append({
+                        "Timestamp": ts,
+                        "Event": f'"{desc_clean}" classification error — {type(exc).__name__}: {exc}',
+                    })
+                    st.error(f"Classification failed: {exc}")
                 else:
-                    _add_to_review_queue(entry)
-                    audit_event = f'"{entry["description"]}" classified as {entry["uk_code"]} (risk: {entry["risk"]})'
-                st.session_state["audit_log"].append({
-                    "Timestamp": entry["timestamp"],
-                    "Event": audit_event,
-                })
+                    entry = {
+                        "description": desc_clean,
+                        "material": mat_clean,
+                        "origin": orig_clean,
+                        "category": category,
+                        "value": value,
+                        "timestamp": ts,
+                        **result,
+                    }
+                    st.session_state["last_result"] = entry
+                    if result.get("hs6") == UNCLASSIFIED_CODE:
+                        audit_event = f'"{entry["description"]}" could not be classified — manual code assignment required'
+                    else:
+                        _add_to_review_queue(entry)
+                        audit_event = f'"{entry["description"]}" classified as {entry["uk_code"]} (risk: {entry["risk"]})'
+                    st.session_state["audit_log"].append({
+                        "Timestamp": entry["timestamp"],
+                        "Event": audit_event,
+                    })
 
     with right:
         st.info(
@@ -669,7 +676,13 @@ elif page == "Bulk Upload":
         # MD5 of file contents is used as the dedup key so two different files
         # with the same name and byte size are still treated as distinct.
         raw_bytes = uploaded.getvalue()
-        file_id = (uploaded.name, hashlib.md5(raw_bytes).hexdigest())
+        # usedforsecurity=False is required on FIPS-enabled Python 3.9+ systems;
+        # the TypeError fallback keeps compatibility with Python 3.8.
+        try:
+            _hex = hashlib.md5(raw_bytes, usedforsecurity=False).hexdigest()
+        except TypeError:
+            _hex = hashlib.md5(raw_bytes).hexdigest()
+        file_id = (uploaded.name, _hex)
         if st.session_state["_bulk_file_id"] != file_id:
             _process_bulk_upload(raw_bytes, uploaded.name, file_id)
     elif st.session_state["_bulk_file_id"] is not None:
