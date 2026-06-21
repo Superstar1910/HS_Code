@@ -12,14 +12,35 @@ from datetime import datetime
 
 st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
 
-_CONFECTIONERY_WORDS = ("chocolate", "chocolates", "biscuit", "biscuits", "candy", "candies", "confection", "confections", "snack", "snacks")
+_CONFECTIONERY_WORDS = (
+    "chocolate", "chocolates", "biscuit", "biscuits",
+    "candy", "candies", "confection", "confections",
+    "snack", "snacks", "cookie", "cookies",
+)
 
-# Pre-compiled regex for stripping currency symbol prefixes before float parsing.
-_VALUE_STRIP_RE = re.compile(r'[£$€¥₹]')
+# Common ISO 4217 currency text codes used to build the value-strip pattern.
+_ISO_CODES = (
+    'AED|AFN|ALL|ARS|AUD|BDT|BGN|BHD|BRL|CAD|CHF|CLP|CNY|COP'
+    '|CZK|DKK|EGP|ETB|EUR|GBP|GEL|GHS|HKD|HRK|HUF|IDR|ILS|INR|IQD|IRR'
+    '|JOD|JPY|KES|KRW|KWD|LBP|LKR|MAD|MXN|MYR|NGN|NOK|NZD|OMR|PHP|PKR'
+    '|PLN|QAR|RON|RSD|RUB|SAR|SEK|SGD|THB|TRY|TWD|TZS|UAH|UGX|USD|UZS'
+    '|VND|XAF|XOF|ZAR|ZMW'
+)
+# Strips currency symbols (£$€¥₹) and ISO 4217 text codes that appear as a
+# prefix ("GBP 250", "USD1250") or suffix ("250 EUR", "250USD") in value
+# fields exported from ERP/accounting systems.  Start/end anchors are used
+# instead of \b so no-space variants like "USD1250" are handled correctly
+# (there is no word boundary between a letter and a digit in \b semantics).
+_VALUE_STRIP_RE = re.compile(
+    r'[£$€¥₹]'
+    r'|^(?:' + _ISO_CODES + r')\s*'
+    r'|\s*(?:' + _ISO_CODES + r')$',
+    re.IGNORECASE,
+)
 _FASHION_WORDS = (
     "belt", "belts", "wallet", "wallets", "glove", "gloves",
     "hat", "hats", "cap", "caps", "tie", "ties",
-    "brooch", "brooches",
+    "brooch", "brooches", "headband", "headbands",
 )
 _BAG_WORDS = (
     "bag", "bags", "handbag", "handbags", "purse", "purses",
@@ -78,10 +99,14 @@ def _parse_value(raw) -> tuple[float, str]:
 
     The warning is non-empty only when the raw input was absent or invalid
     and has been defaulted to 0.0.
-    Handles common CSV formats such as "£1,250.00", "$500", "1,000.50".
+    Handles common CSV formats: "£1,250.00", "$500", "1,000.50",
+    "GBP 250", "250 USD", "EUR1250,00".
     """
     if isinstance(raw, str):
-        s = _VALUE_STRIP_RE.sub('', raw.strip())
+        # Strip currency symbols and ISO 4217 text codes in one pass; strip()
+        # afterward removes any whitespace left between the code and the number
+        # (e.g. "GBP 250" → "GBP 250" → sub → " 250" → strip → "250").
+        s = _VALUE_STRIP_RE.sub('', raw.strip()).strip()
         if not s:
             return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
         # Detect European decimal format: comma followed by 1–2 digits at end,
