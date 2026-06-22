@@ -59,7 +59,11 @@ _FASHION_RE = re.compile(
 _BAG_RE = re.compile(
     r'\b(?:' + '|'.join(re.escape(w) for w in _BAG_WORDS) + r')\b'
 )
-_FREE_MARKER_RE = re.compile(r'\b(?:fragrance|perfume)[-–— ]free\b')
+_FREE_MARKER_RE = re.compile(
+    r'\b(?:fragrance|perfume)[-–— ]free\b'   # fragrance-free, perfume free, etc.
+    r'|\b(?:no|without)\s+(?:fragrance|perfume)\b'  # no fragrance, without perfume
+    r'|\bunscented\b'                                # unscented
+)
 _EURO_DECIMAL_RE = re.compile(r',\d{1,2}$')
 _PERFUME_RE = re.compile(
     r'\b(?:perfumes?|fragrances?|colognes?|aftershaves?'
@@ -89,10 +93,6 @@ RESULT_COLUMNS = frozenset({"hs6", "uk_code", "confidence", "risk", "duty", "vat
 ERROR_CODE = "ERROR"
 UNCLASSIFIED_CODE = "UNCLASSIFIED"
 
-# Categories that suppress food classification even when confectionery keywords match.
-# "other" and "" are included because they signal an unrecognised category, not food.
-_NON_FOOD_CATEGORIES = frozenset({"bags", "beauty", "fashion_accessories", "other", ""})
-
 
 def _parse_value(raw) -> tuple[float, str]:
     """Convert raw value to (normalised_float, warning_message).
@@ -118,9 +118,11 @@ def _parse_value(raw) -> tuple[float, str]:
             s = s.replace('.', '').replace(',', '.')
         else:
             s = s.replace(',', '')
-        raw = s
+        _num = s
+    else:
+        _num = raw
     try:
-        v = float(raw)
+        v = float(_num)
     except (TypeError, ValueError):
         try:
             is_missing = pd.isna(raw)
@@ -201,11 +203,14 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     # Non-fragrance beauty products (skincare, make-up, etc.) fall here.
     is_cosmetics = category_lower == "beauty" and not is_perfume
     is_confectionery = bool(_CONFECTIONERY_RE.search(desc))
-    # Confectionery keywords only drive food classification when the category does
-    # not indicate a different product type; prevents "chocolate leather wallet"
-    # from being misclassified as food when category == "fashion_accessories".
+    # Confectionery keywords drive food classification only when the category is
+    # blank (no signal) or explicitly "food".  Any non-empty category — whether a
+    # known type like "bags"/"beauty" or an unknown bulk-CSV value like "electronics"
+    # — is treated as a contradicting signal and suppresses the keyword override.
+    # This prevents "chocolate-coloured sofa" (category: furniture) and
+    # "chocolate gift bag" (category: bags) from being misclassified as food.
     is_food = category_lower == "food" or (
-        is_confectionery and category_lower not in _NON_FOOD_CATEGORIES
+        is_confectionery and not category_lower
     )
     is_fashion = category_lower == "fashion_accessories" or bool(_FASHION_RE.search(desc))
     # Bag detection: fashion_accessories and food categories override bag keywords.
