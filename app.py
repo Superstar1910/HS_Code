@@ -217,11 +217,14 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     # fashion_accessories: "handbag charm" is an accessory, not a bag.
     # food: "chocolate gift bag" is food, not a handbag — without this guard the
     # is_bag branch fires before is_food and produces an incorrect HS 4202 code.
+    # The is_food guard covers both an explicit category="food" and the case where
+    # confectionery keywords trigger food with no category (e.g. "chocolate gift bag"
+    # with blank category), since is_bag is checked before is_food in the decision tree.
     # category="bags" only fires when description keywords do not indicate a fashion
     # accessory, preventing items like belts or scarves from being misrouted to bag
     # HS codes due to a miscategorised or imprecise category field.
     _bag_keyword = bool(_BAG_RE.search(desc))
-    is_bag = (_bag_keyword and category_lower not in {"fashion_accessories", "food"}) or (category_lower == "bags" and not is_fashion)
+    is_bag = (_bag_keyword and category_lower not in {"fashion_accessories", "food"} and not is_food) or (category_lower == "bags" and not is_fashion)
 
     if is_scarf and is_silk:
         return {
@@ -445,6 +448,7 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
             ),
         })
         st.toast("No pending items to action — unclassified or errored items require manual code assignment.", icon="ℹ️")
+        st.rerun()
     else:
         st.toast("No pending items in the review queue.", icon="ℹ️")
 
@@ -532,8 +536,9 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     }
 
     queueable_df = result_df[~result_df["hs6"].isin({ERROR_CODE, UNCLASSIFIED_CODE})]
+    _queue_cols = ["description", "value", "uk_code", "confidence", "explanation", "risk"]
     try:
-        for row in queueable_df.to_dict("records"):
+        for row in queueable_df[_queue_cols].to_dict("records"):
             _add_to_review_queue({
                 "description": _safe_str(row.get("description", "")),
                 "value": row.get("value", 0.0),
