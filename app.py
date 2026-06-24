@@ -118,15 +118,15 @@ def _parse_value(raw) -> tuple[float, str]:
             s = s.replace('.', '').replace(',', '.')
         else:
             s = s.replace(',', '')
-        _num = s
+        cleaned = s
     else:
-        _num = raw
+        cleaned = raw
     try:
-        v = float(_num)
+        v = float(cleaned)
     except (TypeError, ValueError):
         try:
             is_missing = pd.isna(raw)
-        except Exception:
+        except (TypeError, ValueError):
             is_missing = raw is None
         msg = (
             " Warning: declared value was missing; defaulted to £0 for risk assessment."
@@ -224,7 +224,9 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     # accessory, preventing items like belts or scarves from being misrouted to bag
     # HS codes due to a miscategorised or imprecise category field.
     _bag_keyword = bool(_BAG_RE.search(desc))
-    is_bag = (_bag_keyword and category_lower not in {"fashion_accessories", "food"} and not is_food) or (category_lower == "bags" and not is_fashion)
+    _bag_by_keyword = _bag_keyword and category_lower not in {"fashion_accessories", "food"} and not is_food
+    _bag_by_category = category_lower == "bags" and not is_fashion
+    is_bag = _bag_by_keyword or _bag_by_category
 
     if is_scarf and is_silk:
         return {
@@ -403,7 +405,7 @@ def _add_to_review_queue(result: dict):
     # distinguishes values by whether they meet HIGH_VALUE_THRESHOLD, so two
     # sub-threshold prices for the same product produce the same classification
     # and should map to the same dedup key.
-    key = (result.get("description", "").strip().lower(), safe_val >= HIGH_VALUE_THRESHOLD, result.get("uk_code", ""))
+    key = (_safe_str(result.get("description", "")).strip().lower(), safe_val >= HIGH_VALUE_THRESHOLD, _safe_str(result.get("uk_code", "")))
     if key not in st.session_state["review_keys"]:
         st.session_state["review_keys"].add(key)
         st.session_state["review_items"].append({
@@ -564,12 +566,13 @@ st.session_state.setdefault("_bulk_file_id", None)
 st.session_state.setdefault("_bulk_messages", [])
 st.session_state.setdefault("last_result", None)
 if "seed_logs" not in st.session_state:
-    _today = datetime.now().strftime("%Y-%m-%d")
+    _seed_date = datetime.now().strftime("%Y-%m-%d")
     st.session_state["seed_logs"] = [
-        {"Timestamp": f"{_today}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
-        {"Timestamp": f"{_today}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
-        {"Timestamp": f"{_today}T09:18:00.000000", "Event": "Approved and published to product master"},
+        {"Timestamp": f"{_seed_date}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
+        {"Timestamp": f"{_seed_date}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
+        {"Timestamp": f"{_seed_date}T09:18:00.000000", "Event": "Approved and published to product master"},
     ]
+    del _seed_date
 
 st.sidebar.title("HS & Shipment Pre-Check")
 page = st.sidebar.radio("Navigate", ["Dashboard", "Classify", "Bulk Upload", "Review Queue", "Audit Trail"])
@@ -792,11 +795,14 @@ elif page == "Audit Trail":
 
     session_logs = st.session_state["audit_log"]
     all_logs = seed_logs + session_logs
-    logs = (
-        pd.DataFrame(all_logs)
-        .sort_values("Timestamp")
-        .reset_index(drop=True)
-    )
+    if all_logs:
+        logs = (
+            pd.DataFrame(all_logs)
+            .sort_values("Timestamp")
+            .reset_index(drop=True)
+        )
+    else:
+        logs = pd.DataFrame(columns=["Timestamp", "Event"])
     st.dataframe(logs, use_container_width=True)
     st.download_button(
         "Download Audit Log CSV",
