@@ -70,8 +70,11 @@ _PERFUME_RE = re.compile(
     r'|eau[ -]de[ -](?:parfum|toilette|cologne))\b'
 )
 _SCARF_RE = re.compile(r'\b(?:scarf|scarves)\b')
-_SILK_RE = re.compile(r'\bsilk\b')
-_LEATHER_RE = re.compile(r'\bleather\b')
+# Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
+# "leather-look", "leather-feel", etc. which describe synthetic imitations rather
+# than the genuine material, preventing false duty-code upgrades for polyester/PU goods.
+_SILK_RE = re.compile(r'\bsilk\b(?![-\s](?:effect|like|look|feel|finish|touch)\b)')
+_LEATHER_RE = re.compile(r'\bleather\b(?![-\s](?:look|like|effect|feel|finish|touch)\b)')
 
 # Threshold above which items attract additional customs scrutiny
 HIGH_VALUE_THRESHOLD = 1000.00
@@ -92,6 +95,11 @@ RESULT_COLUMNS = frozenset({"hs6", "uk_code", "confidence", "risk", "duty", "vat
 # Sentinel values used in result rows
 ERROR_CODE = "ERROR"
 UNCLASSIFIED_CODE = "UNCLASSIFIED"
+
+# Maximum number of distinct (desc, material, origin, category, high_value) tuples
+# held in the classification cache.  Covers the vast majority of real-world SKU
+# catalogues while keeping memory bounded to roughly 4 MB worst-case.
+_CACHE_MAX_SIZE = 4096
 
 
 def _parse_value(raw) -> tuple[float, str]:
@@ -162,7 +170,7 @@ def classify_product(description, material, origin, category, value):
     ))
 
 
-@functools.lru_cache(maxsize=4096)
+@functools.lru_cache(maxsize=_CACHE_MAX_SIZE)
 def _classify_product_cached(desc, material_lower, origin_upper, category_lower, high_value):
     # high_value is a bool; using it instead of the raw value means products that
     # share the same description/material/origin/category and the same high-value
@@ -224,6 +232,11 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
     # accessory, preventing items like belts or scarves from being misrouted to bag
     # HS codes due to a miscategorised or imprecise category field.
     _bag_keyword = bool(_BAG_RE.search(desc))
+    # Keyword path does NOT exclude is_fashion: "belt bag" / "clutch bag" descriptions
+    # explicitly name a bag and should be classified as such even when a fashion keyword
+    # ("belt", "clutch") is also present.  The category path uses the stricter guard
+    # (not is_fashion) because category="bags" on an item whose description says only
+    # "belt" is likely a data-entry error; the description is the authoritative signal.
     _bag_by_keyword = _bag_keyword and category_lower not in {"fashion_accessories", "food"} and not is_food
     _bag_by_category = category_lower == "bags" and not is_fashion
     is_bag = _bag_by_keyword or _bag_by_category
@@ -405,7 +418,11 @@ def _add_to_review_queue(result: dict):
     # distinguishes values by whether they meet HIGH_VALUE_THRESHOLD, so two
     # sub-threshold prices for the same product produce the same classification
     # and should map to the same dedup key.
-    key = (_safe_str(result.get("description", "")).strip().lower(), safe_val >= HIGH_VALUE_THRESHOLD, _safe_str(result.get("uk_code", "")))
+    key = (
+        _safe_str(result.get("description", "")).strip().lower(),
+        safe_val >= HIGH_VALUE_THRESHOLD,
+        _safe_str(result.get("uk_code", "")),
+    )
     if key not in st.session_state["review_keys"]:
         st.session_state["review_keys"].add(key)
         st.session_state["review_items"].append({
