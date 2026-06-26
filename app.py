@@ -96,9 +96,12 @@ RESULT_COLUMNS = frozenset({"hs6", "uk_code", "confidence", "risk", "duty", "vat
 ERROR_CODE = "ERROR"
 UNCLASSIFIED_CODE = "UNCLASSIFIED"
 
-# Maximum number of distinct (desc, material, origin, category, high_value) tuples
-# held in the classification cache.  Covers the vast majority of real-world SKU
-# catalogues while keeping memory bounded to roughly 4 MB worst-case.
+# Maximum number of distinct (desc, material, category, high_value) tuples held in
+# the classification cache.  Origin is excluded from the key because classification
+# logic is identical regardless of origin — only the explanation note differs, and
+# that is appended in the classify_product wrapper outside the cache.  Covers the
+# vast majority of real-world SKU catalogues while keeping memory bounded to roughly
+# 4 MB worst-case.
 _CACHE_MAX_SIZE = 4096
 
 
@@ -122,7 +125,12 @@ def _parse_value(raw) -> tuple[float, str]:
         # guard prevents "1,250,00" (two commas, a common typo) from matching the
         # Euro branch and producing the unparseable "1.250.00". Otherwise treat
         # commas as UK/US thousands separators (e.g. "1,250.00" → "1250.00").
-        if _EURO_DECIMAL_RE.search(s) and s.count(',') == 1:
+        comma_count = s.count(',')
+        if comma_count > 1 and _EURO_DECIMAL_RE.search(s):
+            # Two+ commas with a decimal-like tail (e.g. "1,250,00") is ambiguous;
+            # the value cannot be reliably parsed so default to zero with a warning.
+            return 0.0, " Warning: declared value format is ambiguous (multiple commas); defaulted to £0 for risk assessment."
+        if _EURO_DECIMAL_RE.search(s) and comma_count == 1:
             s = s.replace('.', '').replace(',', '.')
         else:
             s = s.replace(',', '')
@@ -159,28 +167,41 @@ def _normalise_value(value) -> float:
 
 def classify_product(description, material, origin, category, value):
     """Normalise inputs then delegate to the cached implementation."""
-    v = _normalise_value(value)
-    # Return a shallow copy so callers cannot mutate the lru_cache entry.
-    return dict(_classify_product_cached(
-        (description or "").strip().lower(),
-        (material or "").strip().lower(),
-        (origin or "").strip().upper(),
-        (category or "").strip().lower(),
-        v >= HIGH_VALUE_THRESHOLD,
-    ))
-
-
-@functools.lru_cache(maxsize=_CACHE_MAX_SIZE)
-def _classify_product_cached(desc, material_lower, origin_upper, category_lower, high_value):
-    # high_value is a bool; using it instead of the raw value means products that
-    # share the same description/material/origin/category and the same high-value
-    # status hit the same cache entry regardless of exact declared price.
-    hv_note = " High declared value flagged for additional customs scrutiny." if high_value else ""
+    # Skip full normalisation when the caller has already parsed the value to a
+    # finite non-negative float (e.g. classify_row passes the result of _parse_value
+    # directly).  This avoids a redundant _parse_value round-trip on bulk uploads.
+    if isinstance(value, float) and not math.isnan(value) and not math.isinf(value) and value >= 0:
+        v = round(value, 2)
+    else:
+        v = _normalise_value(value)
+    origin_upper = (origin or "").strip().upper()
     origin_note = (
         f" Country of origin: {origin_upper}."
         if origin_upper
         else " Warning: country of origin not declared — required for customs clearance."
     )
+    # Return a shallow copy so callers cannot mutate the lru_cache entry.
+    # Origin is handled here (outside the cache) so products from different countries
+    # with identical descriptions/materials/categories share the same cache entry.
+    result = dict(_classify_product_cached(
+        (description or "").strip().lower(),
+        (material or "").strip().lower(),
+        (category or "").strip().lower(),
+        v >= HIGH_VALUE_THRESHOLD,
+    ))
+    result["explanation"] = result["explanation"] + origin_note
+    return result
+
+
+@functools.lru_cache(maxsize=_CACHE_MAX_SIZE)
+def _classify_product_cached(desc, material_lower, category_lower, high_value):
+    # high_value is a bool; using it instead of the raw value means products that
+    # share the same description/material/category and the same high-value status
+    # hit the same cache entry regardless of exact declared price.  Origin is NOT
+    # part of the key — classification logic is identical across origins; only the
+    # explanation note differs and that is appended by classify_product after the
+    # cache lookup.
+    hv_note = " High declared value flagged for additional customs scrutiny." if high_value else ""
 
     # Pre-compute all keyword flags once to avoid redundant regex evaluation.
     is_scarf = bool(_SCARF_RE.search(desc))
@@ -249,7 +270,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "risk": RISK_RED if high_value else RISK_GREEN,
             "duty": "8%",
             "vat": "20%",
-            "explanation": "Classified under silk scarves based on material composition and accessory type." + origin_note + hv_note,
+            "explanation": "Classified under silk scarves based on material composition and accessory type." + hv_note,
         }
     elif is_bag and is_leather:
         return {
@@ -259,7 +280,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "16%",
             "vat": "20%",
-            "explanation": "Classified under handbags with outer surface of leather." + origin_note + hv_note,
+            "explanation": "Classified under handbags with outer surface of leather." + hv_note,
         }
     elif is_bag:
         return {
@@ -269,7 +290,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "3.7%",
             "vat": "20%",
-            "explanation": "Classified under handbags with other outer surface; verify material composition for precise subheading." + origin_note + hv_note,
+            "explanation": "Classified under handbags with other outer surface; verify material composition for precise subheading." + hv_note,
         }
     elif is_scarf:
         return {
@@ -279,7 +300,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "risk": RISK_RED if high_value else RISK_GREEN,
             "duty": "12%",
             "vat": "20%",
-            "explanation": "Classified under scarves and similar articles (non-silk); verify fibre composition for precise subheading (wool: 621420, synthetic fibres: 621430, other fibres: 621490)." + origin_note + hv_note,
+            "explanation": "Classified under scarves and similar articles (non-silk); verify fibre composition for precise subheading (wool: 621420, synthetic fibres: 621430, other fibres: 621490)." + hv_note,
         }
     elif is_perfume:
         return {
@@ -289,7 +310,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "6.5%",
             "vat": "20%",
-            "explanation": "Classified under perfumes and toilet waters; regulated cosmetics handling required." + origin_note + hv_note,
+            "explanation": "Classified under perfumes and toilet waters; regulated cosmetics handling required." + hv_note,
         }
     elif is_cosmetics:
         return {
@@ -299,7 +320,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "6.5%",
             "vat": "20%",
-            "explanation": "Classified under beauty and make-up preparations; verify specific subheading for product type (e.g. lip, eye, skin care)." + origin_note + hv_note,
+            "explanation": "Classified under beauty and make-up preparations; verify specific subheading for product type (e.g. lip, eye, skin care)." + hv_note,
         }
     elif is_food:
         food_vat = "20%" if is_confectionery else "0%"
@@ -318,7 +339,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "vat": food_vat,
             "explanation": (
                 "Classified under miscellaneous food preparations; phytosanitary and food safety checks required."
-                + vat_note + origin_note + hv_note
+                + vat_note + hv_note
             ),
         }
     elif is_fashion:
@@ -329,7 +350,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "risk": RISK_RED if high_value else RISK_GREEN,
             "duty": "12%",
             "vat": "20%",
-            "explanation": "Classified under other made-up clothing accessories; verify composition for precise subheading." + origin_note + hv_note,
+            "explanation": "Classified under other made-up clothing accessories; verify composition for precise subheading." + hv_note,
         }
     else:
         return {
@@ -339,7 +360,7 @@ def _classify_product_cached(desc, material_lower, origin_upper, category_lower,
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "TBD",
             "vat": "TBD",
-            "explanation": "Insufficient structured data; manual review recommended." + origin_note + hv_note,
+            "explanation": "Insufficient structured data; manual review recommended." + hv_note,
         }
 
 
@@ -378,7 +399,7 @@ def classify_row(row):
             val,
         )
         if val_warning:
-            result = {**result, "explanation": result["explanation"] + val_warning}
+            result["explanation"] += val_warning
         return pd.Series(result)
     except Exception as e:
         row_idx = getattr(row, "name", None)
@@ -782,9 +803,41 @@ elif page == "Review Queue":
     if items:
         display_cols = ["Product", "Suggested Code", "Confidence", "Risk", "Status", "Explanation"]
         review_df = pd.DataFrame(items, columns=display_cols)
-        st.dataframe(review_df, use_container_width=True)
 
-        st.write("**Manual review actions**")
+        # Editable table: Status column is a dropdown; all other columns are read-only.
+        edited_df = st.data_editor(
+            review_df,
+            column_config={
+                "Status": st.column_config.SelectboxColumn(
+                    "Status",
+                    options=[STATUS_PENDING, STATUS_APPROVED, STATUS_OVERRIDDEN],
+                    required=True,
+                ),
+            },
+            disabled=["Product", "Suggested Code", "Confidence", "Risk", "Explanation"],
+            hide_index=True,
+            use_container_width=True,
+            key="review_queue_editor",
+        )
+
+        # Detect per-row status changes made directly in the table and persist them.
+        original_statuses = review_df["Status"].tolist()
+        edited_statuses = edited_df["Status"].tolist()
+        if original_statuses != edited_statuses:
+            ts = datetime.now().isoformat(timespec="microseconds")
+            for i, (orig_status, new_status) in enumerate(zip(original_statuses, edited_statuses)):
+                if orig_status != new_status:
+                    items[i]["Status"] = new_status
+                    st.session_state["audit_log"].append({
+                        "Timestamp": ts,
+                        "Event": (
+                            f"Review Queue: '{items[i]['Product']}' "
+                            f"status changed from {orig_status} to {new_status}"
+                        ),
+                    })
+            st.rerun()
+
+        st.write("**Bulk review actions**")
         col1, col2 = st.columns(2)
 
         if col1.button("Approve All"):
