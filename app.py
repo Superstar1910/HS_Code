@@ -64,6 +64,18 @@ _FREE_MARKER_RE = re.compile(
     r'|\b(?:no|without)\s+(?:fragrance|perfume)\b'  # no fragrance, without perfume
     r'|\bunscented\b'                                # unscented
 )
+# Preceding qualifiers that indicate a synthetic imitation rather than the genuine
+# material.  These complement the negative-lookahead approach used in _SILK_RE and
+# _LEATHER_RE (which only catch following modifiers like "silk-effect", "leather-look")
+# by also catching constructions like "faux leather", "vegan leather", "PU leather",
+# "synthetic silk" — all of which would otherwise pass through the duty-code upgrade
+# branches and attract the wrong (higher) duty rates.
+_FAUX_SILK_RE = re.compile(
+    r'\b(?:faux|synthetic|artificial|imitation|fake)\s+silk\b'
+)
+_FAUX_LEATHER_RE = re.compile(
+    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane)\s+leather\b'
+)
 _EURO_DECIMAL_RE = re.compile(r',\d{1,2}$')
 _PERFUME_RE = re.compile(
     r'\b(?:perfumes?|fragrances?|colognes?|aftershaves?'
@@ -126,11 +138,12 @@ def _parse_value(raw) -> tuple[float, str]:
         # Euro branch and producing the unparseable "1.250.00". Otherwise treat
         # commas as UK/US thousands separators (e.g. "1,250.00" → "1250.00").
         comma_count = s.count(',')
-        if comma_count > 1 and _EURO_DECIMAL_RE.search(s):
+        euro_tail = _EURO_DECIMAL_RE.search(s)
+        if comma_count > 1 and euro_tail:
             # Two+ commas with a decimal-like tail (e.g. "1,250,00") is ambiguous;
             # the value cannot be reliably parsed so default to zero with a warning.
             return 0.0, " Warning: declared value format is ambiguous (multiple commas); defaulted to £0 for risk assessment."
-        if _EURO_DECIMAL_RE.search(s) and comma_count == 1:
+        if euro_tail and comma_count == 1:
             s = s.replace('.', '').replace(',', '.')
         else:
             s = s.replace(',', '')
@@ -209,11 +222,23 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # description when the material field was not supplied, so that terms like
     # "silk-effect polyester" or "leather-look PU" in a description do not
     # trigger the silk/leather duty codes when the actual material differs.
-    is_silk = bool(_SILK_RE.search(material_lower)) or (
-        not material_lower and bool(_SILK_RE.search(desc))
+    # _FAUX_SILK_RE / _FAUX_LEATHER_RE guard against preceding qualifiers
+    # ("faux leather", "vegan leather", "synthetic silk", "PU leather", etc.)
+    # which would otherwise pass through _SILK_RE / _LEATHER_RE unchanged and
+    # attract the wrong (higher) duty-code branches.
+    is_silk = (
+        bool(_SILK_RE.search(material_lower)) and not bool(_FAUX_SILK_RE.search(material_lower))
+    ) or (
+        not material_lower
+        and bool(_SILK_RE.search(desc))
+        and not bool(_FAUX_SILK_RE.search(desc))
     )
-    is_leather = bool(_LEATHER_RE.search(material_lower)) or (
-        not material_lower and bool(_LEATHER_RE.search(desc))
+    is_leather = (
+        bool(_LEATHER_RE.search(material_lower)) and not bool(_FAUX_LEATHER_RE.search(material_lower))
+    ) or (
+        not material_lower
+        and bool(_LEATHER_RE.search(desc))
+        and not bool(_FAUX_LEATHER_RE.search(desc))
     )
     # Either "fragrance-free" or "perfume-free" in description or material negates
     # the product being a fragrance/perfume; both flags suppress ALL perfume signals
@@ -488,7 +513,9 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
             ),
         })
         st.toast("No pending items to action — unclassified or errored items require manual code assignment.", icon="ℹ️")
-        st.rerun()
+        # No st.rerun() — the review queue display is unchanged, so a rerun would
+        # only reset the data_editor widget state unnecessarily.  The audit log
+        # entry is persisted in session state and visible on the Audit Trail page.
     else:
         st.toast("No pending items in the review queue.", icon="ℹ️")
 
@@ -826,7 +853,7 @@ elif page == "Review Queue":
         if original_statuses != edited_statuses:
             ts = datetime.now().isoformat(timespec="microseconds")
             for i, (orig_status, new_status) in enumerate(zip(original_statuses, edited_statuses)):
-                if orig_status != new_status:
+                if orig_status != new_status and i < len(items):
                     items[i]["Status"] = new_status
                     st.session_state["audit_log"].append({
                         "Timestamp": ts,
