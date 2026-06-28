@@ -14,8 +14,10 @@ st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
 
 _CONFECTIONERY_WORDS = (
     "chocolate", "chocolates", "biscuit", "biscuits",
-    "candy", "candies", "confection", "confections",
+    "candy", "candies", "confection", "confections", "confectionery",
     "snack", "snacks", "cookie", "cookies",
+    "sweets", "toffee", "toffees", "fudge",
+    "lollipop", "lollipops",
 )
 
 # Common ISO 4217 currency text codes used to build the value-strip pattern.
@@ -350,7 +352,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     elif is_food:
         food_vat = "20%" if is_confectionery else "0%"
         vat_note = (
-            " Note: confectionery and snack products (e.g. chocolate, biscuits, candy, confections, snacks)"
+            " Note: confectionery and snack products (e.g. chocolate, biscuits, candy, sweets, toffee, fudge, snacks)"
             " are standard-rated at 20% VAT in the UK."
             if is_confectionery
             else " Note: most food is zero-rated for VAT in the UK; verify the applicable rate."
@@ -579,6 +581,9 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
         st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
+        # Mark the file as processed so a deterministic error does not trigger
+        # re-classification on every subsequent page interaction.
+        st.session_state["_bulk_file_id"] = file_id
         return
 
     error_count = (result_df["hs6"] == ERROR_CODE).sum()
