@@ -533,6 +533,11 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     st.session_state["_bulk_messages"] = []
     # Reset stale results so a failed upload never shows the previous run's data.
     st.session_state["bulk_result"] = None
+    # Mark the file as processed immediately. Validation errors are deterministic for
+    # a given file (same content → same error), so leaving _bulk_file_id unset would
+    # cause _process_bulk_upload to be re-invoked on every subsequent page rerun while
+    # the same bad file remains selected.
+    st.session_state["_bulk_file_id"] = file_id
     try:
         # Read one extra row so len(df) > 5000 can detect oversized files.
         df = pd.read_csv(io.BytesIO(file_bytes), nrows=5001, encoding="utf-8-sig", encoding_errors="replace")
@@ -548,6 +553,9 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
                 "replaced with \ufffd. Re-save the file as UTF-8 to ensure accurate "
                 "classification."
             )))
+    except pd.errors.EmptyDataError:
+        st.session_state["_bulk_messages"].append(("error", "The uploaded file is empty — it contains no columns or data."))
+        return
     except pd.errors.ParserError:
         st.session_state["_bulk_messages"].append(("error", "CSV format is invalid — check that columns are comma-separated and the file is UTF-8 encoded."))
         return
@@ -581,9 +589,6 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
         st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
-        # Mark the file as processed so a deterministic error does not trigger
-        # re-classification on every subsequent page interaction.
-        st.session_state["_bulk_file_id"] = file_id
         return
 
     error_count = (result_df["hs6"] == ERROR_CODE).sum()
@@ -621,10 +626,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             })
     except Exception as e:
         st.session_state["_bulk_messages"].append(("warning", f"Review queue could not be fully populated: {e}"))
-    # Mark the file as processed after state is updated. Set unconditionally so a
-    # partial queue failure does not trigger an infinite re-classification loop on
-    # subsequent reruns.
-    st.session_state["_bulk_file_id"] = file_id
+    # _bulk_file_id was already set at the top of this function.
 
 
 # Initialise session state keys once so all pages can rely on them existing.
