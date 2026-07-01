@@ -67,10 +67,10 @@ _FREE_MARKER_RE = re.compile(
 # "synthetic silk" — all of which would otherwise pass through the duty-code upgrade
 # branches and attract the wrong (higher) duty rates.
 _FAUX_SILK_RE = re.compile(
-    r'\b(?:faux|synthetic|artificial|imitation|fake)\s+silks?\b'
+    r'\b(?:faux|synthetic|artificial|imitation|fake)[-\s]+silks?\b'
 )
 _FAUX_LEATHER_RE = re.compile(
-    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane)\s+leathers?\b'
+    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane)[-\s]+leathers?\b'
 )
 _EURO_DECIMAL_RE = re.compile(r',\d{1,2}$')
 _PERFUME_RE = re.compile(
@@ -83,8 +83,8 @@ _SCARF_RE = re.compile(r'\b(?:scarfs?|scarves)\b')
 # than the genuine material, preventing false duty-code upgrades for polyester/PU goods.
 # s? covers the plural ("silks", "leathers") which appears in supplier-facing material
 # fields (e.g. "woven silks", "fine leathers") and bulk CSV exports.
-_SILK_RE = re.compile(r'\bsilks?\b(?![-\s](?:effect|like|look|feel|finish|touch)\b)')
-_LEATHER_RE = re.compile(r'\bleathers?\b(?![-\s](?:look|like|effect|feel|finish|touch)\b)')
+_SILK_RE = re.compile(r'\bsilks?\b(?![-\s]+(?:effect|like|look|feel|finish|touch)\b)')
+_LEATHER_RE = re.compile(r'\bleathers?\b(?![-\s]+(?:look|like|effect|feel|finish|touch)\b)')
 
 # Threshold above which items attract additional customs scrutiny
 HIGH_VALUE_THRESHOLD = 1000.00
@@ -136,14 +136,29 @@ def _parse_value(raw) -> tuple[float, str]:
         # Euro branch and producing the unparseable "1.250.00". Otherwise treat
         # commas as UK/US thousands separators (e.g. "1,250.00" → "1250.00").
         comma_count = s.count(',')
+        dot_count = s.count('.')
         euro_tail = _EURO_DECIMAL_RE.search(s)
         if comma_count > 1 and euro_tail:
             # Two+ commas with a decimal-like tail (e.g. "1,250,00") is ambiguous;
             # the value cannot be reliably parsed so default to zero with a warning.
             return 0.0, " Warning: declared value format is ambiguous (multiple commas); defaulted to £0 for risk assessment."
-        if euro_tail and comma_count == 1:
+        if dot_count >= 2 and comma_count == 0:
+            # European notation: multiple periods as thousands separators with no
+            # decimal part (e.g. "1.250.000" → 1250000). A single period is still
+            # treated as a decimal point by the UK/US path below.
+            s = s.replace('.', '')
+        elif euro_tail and comma_count == 1:
             s = s.replace('.', '').replace(',', '.')
         else:
+            # UK/US path: commas are thousands separators.  Detect the non-standard
+            # case where a single comma precedes a decimal point but the digit group
+            # between them is not 3 digits (e.g. "1,50.00") — this is ambiguous and
+            # cannot be reliably parsed.
+            if comma_count == 1 and dot_count == 1:
+                comma_pos = s.index(',')
+                dot_pos = s.index('.')
+                if comma_pos < dot_pos and len(s[comma_pos + 1:dot_pos]) != 3:
+                    return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
             s = s.replace(',', '')
         cleaned = s
     else:
