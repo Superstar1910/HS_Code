@@ -12,13 +12,9 @@ from datetime import datetime
 
 st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
 
-_CONFECTIONERY_WORDS = (
-    "chocolate", "chocolates", "biscuit", "biscuits",
-    "candy", "candies", "confection", "confections", "confectionery",
-    "snack", "snacks", "cookie", "cookies",
-    "sweets", "toffee", "toffees", "fudge",
-    "lollipop", "lollipops",
-)
+def _make_word_re(*words: str) -> re.Pattern[str]:
+    """Return a compiled whole-word alternation regex for the given keywords."""
+    return re.compile(r'\b(?:' + '|'.join(re.escape(w) for w in words) + r')\b')
 
 # Common ISO 4217 currency text codes used to build the value-strip pattern.
 _ISO_CODES = (
@@ -39,27 +35,25 @@ _VALUE_STRIP_RE = re.compile(
     r'|\s*(?:' + _ISO_CODES + r')$',
     re.IGNORECASE,
 )
-_FASHION_WORDS = (
+
+# Pre-compiled alternation patterns for keyword groups used in classification.
+_CONFECTIONERY_RE = _make_word_re(
+    "chocolate", "chocolates", "biscuit", "biscuits",
+    "candy", "candies", "confection", "confections", "confectionery",
+    "snack", "snacks", "cookie", "cookies",
+    "sweets", "toffee", "toffees", "fudge",
+    "lollipop", "lollipops",
+)
+_FASHION_RE = _make_word_re(
     "belt", "belts", "wallet", "wallets", "glove", "gloves",
     "hat", "hats", "cap", "caps", "tie", "ties",
     "brooch", "brooches", "headband", "headbands",
 )
-_BAG_WORDS = (
+_BAG_RE = _make_word_re(
     "bag", "bags", "handbag", "handbags", "purse", "purses",
     "tote", "totes", "clutch", "clutches", "satchel", "satchels",
     "backpack", "backpacks", "rucksack", "rucksacks",
     "briefcase", "briefcases",
-)
-
-# Pre-compiled alternation patterns for keyword groups used in classification.
-_CONFECTIONERY_RE = re.compile(
-    r'\b(?:' + '|'.join(re.escape(w) for w in _CONFECTIONERY_WORDS) + r')\b'
-)
-_FASHION_RE = re.compile(
-    r'\b(?:' + '|'.join(re.escape(w) for w in _FASHION_WORDS) + r')\b'
-)
-_BAG_RE = re.compile(
-    r'\b(?:' + '|'.join(re.escape(w) for w in _BAG_WORDS) + r')\b'
 )
 _FREE_MARKER_RE = re.compile(
     r'\b(?:fragrance|perfume)[-–— ]free\b'   # fragrance-free, perfume free, etc.
@@ -73,22 +67,24 @@ _FREE_MARKER_RE = re.compile(
 # "synthetic silk" — all of which would otherwise pass through the duty-code upgrade
 # branches and attract the wrong (higher) duty rates.
 _FAUX_SILK_RE = re.compile(
-    r'\b(?:faux|synthetic|artificial|imitation|fake)\s+silk\b'
+    r'\b(?:faux|synthetic|artificial|imitation|fake)\s+silks?\b'
 )
 _FAUX_LEATHER_RE = re.compile(
-    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane)\s+leather\b'
+    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane)\s+leathers?\b'
 )
 _EURO_DECIMAL_RE = re.compile(r',\d{1,2}$')
 _PERFUME_RE = re.compile(
     r'\b(?:perfumes?|fragrances?|colognes?|aftershaves?'
     r'|eau[ -]de[ -](?:parfum|toilette|cologne))\b'
 )
-_SCARF_RE = re.compile(r'\b(?:scarf|scarves)\b')
+_SCARF_RE = re.compile(r'\b(?:scarfs?|scarves)\b')
 # Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
 # "leather-look", "leather-feel", etc. which describe synthetic imitations rather
 # than the genuine material, preventing false duty-code upgrades for polyester/PU goods.
-_SILK_RE = re.compile(r'\bsilk\b(?![-\s](?:effect|like|look|feel|finish|touch)\b)')
-_LEATHER_RE = re.compile(r'\bleather\b(?![-\s](?:look|like|effect|feel|finish|touch)\b)')
+# s? covers the plural ("silks", "leathers") which appears in supplier-facing material
+# fields (e.g. "woven silks", "fine leathers") and bulk CSV exports.
+_SILK_RE = re.compile(r'\bsilks?\b(?![-\s](?:effect|like|look|feel|finish|touch)\b)')
+_LEATHER_RE = re.compile(r'\bleathers?\b(?![-\s](?:look|like|effect|feel|finish|touch)\b)')
 
 # Threshold above which items attract additional customs scrutiny
 HIGH_VALUE_THRESHOLD = 1000.00
@@ -174,6 +170,15 @@ def _parse_value(raw) -> tuple[float, str]:
     return round(v, 2), ""
 
 
+def _is_normalised_float(value) -> bool:
+    """Return True when value is already a finite, non-negative float.
+
+    Used as a fast-path guard to skip a redundant _parse_value round-trip when
+    the caller (e.g. classify_row) has already parsed the value via _parse_value.
+    """
+    return isinstance(value, float) and not math.isnan(value) and not math.isinf(value) and value >= 0
+
+
 def _normalise_value(value) -> float:
     """Convert value to a finite, non-negative float rounded to pence."""
     v, _ = _parse_value(value)
@@ -185,7 +190,7 @@ def classify_product(description, material, origin, category, value):
     # Skip full normalisation when the caller has already parsed the value to a
     # finite non-negative float (e.g. classify_row passes the result of _parse_value
     # directly).  This avoids a redundant _parse_value round-trip on bulk uploads.
-    if isinstance(value, float) and not math.isnan(value) and not math.isinf(value) and value >= 0:
+    if _is_normalised_float(value):
         v = round(value, 2)
     else:
         v = _normalise_value(value)
@@ -401,8 +406,6 @@ def _format_confidence(conf) -> str:
 
 def _safe_str(v) -> str:
     """Convert a value to string, returning empty string for NaN/None."""
-    if v is None:
-        return ""
     if isinstance(v, str):
         return v
     try:
@@ -461,7 +464,8 @@ def _add_to_review_queue(result: dict):
     """
     if result.get("uk_code") in {ERROR_CODE, UNCLASSIFIED_CODE}:
         return
-    safe_val = _normalise_value(result.get("value", 0.0))
+    raw_val = result.get("value", 0.0)
+    safe_val = round(raw_val, 2) if _is_normalised_float(raw_val) else _normalise_value(raw_val)
     # Use the high-value boolean rather than the raw amount: classification only
     # distinguishes values by whether they meet HIGH_VALUE_THRESHOLD, so two
     # sub-threshold prices for the same product produce the same classification
@@ -854,21 +858,25 @@ elif page == "Review Queue":
             key="review_queue_editor",
         )
 
-        # Detect per-row status changes made directly in the table and persist them.
-        original_statuses = review_df["Status"].tolist()
-        edited_statuses = edited_df["Status"].tolist()
-        if original_statuses != edited_statuses:
-            ts = datetime.now().isoformat(timespec="microseconds")
-            for i, (orig_status, new_status) in enumerate(zip(original_statuses, edited_statuses)):
-                if orig_status != new_status and i < len(items):
-                    items[i]["Status"] = new_status
-                    st.session_state["audit_log"].append({
-                        "Timestamp": ts,
-                        "Event": (
-                            f"Review Queue: '{items[i]['Product']}' "
-                            f"status changed from {orig_status} to {new_status}"
-                        ),
-                    })
+        # Detect per-row status changes: iterate once, track whether anything changed,
+        # then rerun only if needed.  A single O(n) pass avoids the previous approach
+        # of a separate O(n) list comparison followed by a second O(n) zip iteration.
+        ts = datetime.now().isoformat(timespec="microseconds")
+        changed = False
+        for i, (orig_status, new_status) in enumerate(
+            zip(review_df["Status"], edited_df["Status"])
+        ):
+            if orig_status != new_status and i < len(items):
+                items[i]["Status"] = new_status
+                st.session_state["audit_log"].append({
+                    "Timestamp": ts,
+                    "Event": (
+                        f"Review Queue: '{items[i]['Product']}' "
+                        f"status changed from {orig_status} to {new_status}"
+                    ),
+                })
+                changed = True
+        if changed:
             st.rerun()
 
         st.write("**Bulk review actions**")
