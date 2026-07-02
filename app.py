@@ -150,7 +150,7 @@ def _parse_value(raw) -> tuple[float, str]:
             # trailing 2-digit group (e.g. "1.250.00") indicates a misplaced
             # decimal and is ambiguous — warn rather than produce a 100× error.
             parts = s.split('.')
-            if all(len(p) == 3 for p in parts[1:]):
+            if len(parts[0]) <= 3 and all(len(p) == 3 for p in parts[1:]):
                 s = s.replace('.', '')
             else:
                 return 0.0, " Warning: declared value format is ambiguous (mixed dot groups); defaulted to £0 for risk assessment."
@@ -165,6 +165,8 @@ def _parse_value(raw) -> tuple[float, str]:
                 comma_pos = s.index(',')
                 dot_pos = s.index('.')
                 if comma_pos < dot_pos and len(s[comma_pos + 1:dot_pos]) != 3:
+                    return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
+                if dot_pos < comma_pos and len(s[dot_pos + 1:comma_pos]) != 3:
                     return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
             s = s.replace(',', '')
         cleaned = s
@@ -312,7 +314,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # ("belt", "clutch") is also present.  The category path uses the stricter guard
     # (not is_fashion) because category="bags" on an item whose description says only
     # "belt" is likely a data-entry error; the description is the authoritative signal.
-    _bag_by_keyword = _bag_keyword and category_lower not in {"fashion_accessories", "food"} and not is_food
+    _bag_by_keyword = _bag_keyword and category_lower != "fashion_accessories" and not is_food
     _bag_by_category = category_lower == "bags" and not is_fashion
     is_bag = _bag_by_keyword or _bag_by_category
 
@@ -428,6 +430,8 @@ def _format_confidence(conf) -> str:
 
 def _safe_str(v) -> str:
     """Convert a value to string, returning empty string for NaN/None."""
+    if v is None:
+        return ""
     if isinstance(v, str):
         return v
     try:
