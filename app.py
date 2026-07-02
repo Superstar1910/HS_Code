@@ -67,7 +67,7 @@ _FREE_MARKER_RE = re.compile(
 # "synthetic silk" — all of which would otherwise pass through the duty-code upgrade
 # branches and attract the wrong (higher) duty rates.
 _FAUX_SILK_RE = re.compile(
-    r'\b(?:faux|synthetic|artificial|imitation|fake)[-\s]+silks?\b'
+    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake)[-\s]+silks?\b'
 )
 _FAUX_LEATHER_RE = re.compile(
     r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane)[-\s]+leathers?\b'
@@ -146,7 +146,14 @@ def _parse_value(raw) -> tuple[float, str]:
             # European notation: multiple periods as thousands separators with no
             # decimal part (e.g. "1.250.000" → 1250000). A single period is still
             # treated as a decimal point by the UK/US path below.
-            s = s.replace('.', '')
+            # Only strip when every inter-dot segment is exactly 3 digits; a
+            # trailing 2-digit group (e.g. "1.250.00") indicates a misplaced
+            # decimal and is ambiguous — warn rather than produce a 100× error.
+            parts = s.split('.')
+            if all(len(p) == 3 for p in parts[1:]):
+                s = s.replace('.', '')
+            else:
+                return 0.0, " Warning: declared value format is ambiguous (mixed dot groups); defaulted to £0 for risk assessment."
         elif euro_tail and comma_count == 1:
             s = s.replace('.', '').replace(',', '.')
         else:
@@ -191,7 +198,7 @@ def _is_normalised_float(value) -> bool:
     Used as a fast-path guard to skip a redundant _parse_value round-trip when
     the caller (e.g. classify_row) has already parsed the value via _parse_value.
     """
-    return isinstance(value, float) and not math.isnan(value) and not math.isinf(value) and value >= 0
+    return isinstance(value, float) and math.isfinite(value) and value >= 0
 
 
 def _normalise_value(value) -> float:
