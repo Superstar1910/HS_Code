@@ -12,10 +12,6 @@ from datetime import datetime
 
 st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
 
-def _make_word_re(*words: str) -> re.Pattern[str]:
-    """Return a compiled whole-word alternation regex for the given keywords."""
-    return re.compile(r'\b(?:' + '|'.join(re.escape(w) for w in words) + r')\b')
-
 # Common ISO 4217 currency text codes used to build the value-strip pattern.
 _ISO_CODES = (
     'AED|AFN|ALL|ARS|AUD|BDT|BGN|BHD|BRL|CAD|CHF|CLP|CNY|COP'
@@ -37,23 +33,17 @@ _VALUE_STRIP_RE = re.compile(
 )
 
 # Pre-compiled alternation patterns for keyword groups used in classification.
-_CONFECTIONERY_RE = _make_word_re(
-    "chocolate", "chocolates", "biscuit", "biscuits",
-    "candy", "candies", "confection", "confections", "confectionery",
-    "snack", "snacks", "cookie", "cookies",
-    "sweets", "toffee", "toffees", "fudge",
-    "lollipop", "lollipops",
+# Regular plurals use `s?`; irregular plurals are listed explicitly.
+_CONFECTIONERY_RE = re.compile(
+    r'\b(?:chocolates?|biscuits?|candy|candies|confections?|confectionery'
+    r'|snacks?|cookies?|sweets|toffees?|fudge|lollipops?)\b'
 )
-_FASHION_RE = _make_word_re(
-    "belt", "belts", "wallet", "wallets", "glove", "gloves",
-    "hat", "hats", "cap", "caps", "tie", "ties",
-    "brooch", "brooches", "headband", "headbands",
+_FASHION_RE = re.compile(
+    r'\b(?:belts?|wallets?|gloves?|hats?|caps?|ties?|brooch(?:es)?|headbands?)\b'
 )
-_BAG_RE = _make_word_re(
-    "bag", "bags", "handbag", "handbags", "purse", "purses",
-    "tote", "totes", "clutch", "clutches", "satchel", "satchels",
-    "backpack", "backpacks", "rucksack", "rucksacks",
-    "briefcase", "briefcases",
+_BAG_RE = re.compile(
+    r'\b(?:bags?|handbags?|purses?|totes?|clutch(?:es)?|satchels?'
+    r'|backpacks?|rucksacks?|briefcases?)\b'
 )
 _FREE_MARKER_RE = re.compile(
     r'\b(?:fragrance|perfume)[-–— ]free\b'   # fragrance-free, perfume free, etc.
@@ -209,7 +199,9 @@ def _normalise_value(value) -> float:
     return v
 
 
-def classify_product(description, material, origin, category, value):
+def classify_product(
+    description: str, material: str, origin: str, category: str, value
+) -> dict:
     """Normalise inputs then delegate to the cached implementation."""
     # Skip full normalisation when the caller has already parsed the value to a
     # finite non-negative float (e.g. classify_row passes the result of _parse_value
@@ -238,7 +230,9 @@ def classify_product(description, material, origin, category, value):
 
 
 @functools.lru_cache(maxsize=_CACHE_MAX_SIZE)
-def _classify_product_cached(desc, material_lower, category_lower, high_value):
+def _classify_product_cached(
+    desc: str, material_lower: str, category_lower: str, high_value: bool
+) -> dict:
     # high_value is a bool; using it instead of the raw value means products that
     # share the same description/material/category and the same high-value status
     # hit the same cache entry regardless of exact declared price.  Origin is NOT
@@ -442,7 +436,7 @@ def _safe_str(v) -> str:
     return str(v)
 
 
-def classify_row(row):
+def classify_row(row: pd.Series) -> pd.Series:
     """Apply classify_product to a DataFrame row; safe for use with df.apply()."""
     val, val_warning = 0.0, ""
     try:
@@ -478,7 +472,7 @@ def classify_row(row):
         })
 
 
-def _add_to_review_queue(result: dict):
+def _add_to_review_queue(result: dict) -> None:
     """Add a classified item to the review queue if not already present.
 
     Deduplicates on (description, high_value_flag, uk_code) so that re-clicking
@@ -719,7 +713,11 @@ elif page == "Classify":
         description = st.text_input("Product Description", "Luxury silk scarf with hand-rolled edges", max_chars=500)
         material = st.text_input("Material Composition", "100% silk", max_chars=200)
         origin = st.text_input("Country of Origin", "IT", max_chars=50)
-        category = st.selectbox("Category", ["fashion_accessories", "bags", "beauty", "food", "other"])
+        category = st.selectbox(
+            "Category",
+            ["fashion_accessories", "bags", "beauty", "food", "other"],
+            help="Select 'food' for confectionery, snacks, and all other food products. 'other' suppresses food keyword detection.",
+        )
         value = st.number_input("Declared Value (£)", min_value=0.0, value=250.0, step=10.0)
 
         if st.button("Run Classification"):
@@ -879,6 +877,7 @@ elif page == "Review Queue":
                 ),
             },
             disabled=["Product", "Suggested Code", "Confidence", "Risk", "Explanation"],
+            num_rows="fixed",
             hide_index=True,
             use_container_width=True,
             key="review_queue_editor",
