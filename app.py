@@ -150,7 +150,7 @@ def _parse_value(raw) -> tuple[float, str]:
             # trailing 2-digit group (e.g. "1.250.00") indicates a misplaced
             # decimal and is ambiguous — warn rather than produce a 100× error.
             parts = s.split('.')
-            if len(parts[0]) <= 3 and all(len(p) == 3 for p in parts[1:]):
+            if parts[0] and len(parts[0]) <= 3 and all(len(p) == 3 for p in parts[1:]):
                 s = s.replace('.', '')
             else:
                 return 0.0, " Warning: declared value format is ambiguous (mixed dot groups); defaulted to £0 for risk assessment."
@@ -887,12 +887,14 @@ elif page == "Review Queue":
         # Detect per-row status changes: iterate once, track whether anything changed,
         # then rerun only if needed.  A single O(n) pass avoids the previous approach
         # of a separate O(n) list comparison followed by a second O(n) zip iteration.
-        ts = datetime.now().isoformat(timespec="microseconds")
         changed = False
+        ts = None
         for i, (orig_status, new_status) in enumerate(
             zip(review_df["Status"], edited_df["Status"])
         ):
-            if orig_status != new_status and i < len(items):
+            if orig_status != new_status:
+                if ts is None:
+                    ts = datetime.now().isoformat(timespec="microseconds")
                 items[i]["Status"] = new_status
                 st.session_state["audit_log"].append({
                     "Timestamp": ts,
