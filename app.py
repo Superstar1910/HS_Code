@@ -162,11 +162,9 @@ def _parse_value(raw) -> tuple[float, str]:
             # between them is not 3 digits (e.g. "1,50.00") — this is ambiguous and
             # cannot be reliably parsed.
             if comma_count == 1 and dot_count == 1:
-                comma_pos = s.index(',')
-                dot_pos = s.index('.')
-                if comma_pos < dot_pos and len(s[comma_pos + 1:dot_pos]) != 3:
-                    return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
-                if dot_pos < comma_pos and len(s[dot_pos + 1:comma_pos]) != 3:
+                lo = min(s.index(','), s.index('.'))
+                hi = max(s.index(','), s.index('.'))
+                if len(s[lo + 1:hi]) != 3:
                     return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
             s = s.replace(',', '')
         cleaned = s
