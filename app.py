@@ -77,7 +77,7 @@ _PERFUME_RE = re.compile(
     r'\b(?:perfumes?|fragrances?|colognes?|aftershaves?'
     r'|eau[ -]de[ -](?:parfum|toilette|cologne))\b'
 )
-_SCARF_RE = re.compile(r'\b(?:scarfs?|scarves)\b')
+_SCARF_RE = re.compile(r'\b(?:scarf|scarves)\b')
 # Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
 # "leather-look", "leather-feel", etc. which describe synthetic imitations rather
 # than the genuine material, preventing false duty-code upgrades for polyester/PU goods.
@@ -157,14 +157,18 @@ def _parse_value(raw) -> tuple[float, str]:
         elif euro_tail and comma_count == 1:
             s = s.replace('.', '').replace(',', '.')
         else:
-            # UK/US path: commas are thousands separators.  Detect the non-standard
-            # case where a single comma precedes a decimal point but the digit group
-            # between them is not 3 digits (e.g. "1,50.00") — this is ambiguous and
-            # cannot be reliably parsed.
+            # UK/US path: commas are thousands separators.  Warn on two non-standard
+            # patterns: (a) dot-before-comma without a recognised Euro decimal tail
+            # (e.g. "1.250,000" — euro_tail only catches 1-2 digit tails, so a
+            # 3-digit tail like ",000" falls through here); (b) comma-before-dot with
+            # a non-3-digit inter-separator group (e.g. "1,50.00").
             if comma_count == 1 and dot_count == 1:
-                lo = min(s.index(','), s.index('.'))
-                hi = max(s.index(','), s.index('.'))
-                if len(s[lo + 1:hi]) != 3:
+                ci = s.index(',')
+                di = s.index('.')
+                if di < ci:
+                    # Dot precedes comma without a matching euro_tail — ambiguous.
+                    return 0.0, " Warning: declared value format is ambiguous (dot before comma without standard decimal suffix); defaulted to £0 for risk assessment."
+                if len(s[ci + 1:di]) != 3:
                     return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
             s = s.replace(',', '')
         cleaned = s
@@ -203,19 +207,15 @@ def _is_normalised_float(value) -> bool:
 
 def _normalise_value(value) -> float:
     """Convert value to a finite, non-negative float rounded to pence."""
+    if _is_normalised_float(value):
+        return round(value, 2)
     v, _ = _parse_value(value)
     return v
 
 
 def classify_product(description, material, origin, category, value):
     """Normalise inputs then delegate to the cached implementation."""
-    # Skip full normalisation when the caller has already parsed the value to a
-    # finite non-negative float (e.g. classify_row passes the result of _parse_value
-    # directly).  This avoids a redundant _parse_value round-trip on bulk uploads.
-    if _is_normalised_float(value):
-        v = round(value, 2)
-    else:
-        v = _normalise_value(value)
+    v = _normalise_value(value)
     origin_upper = (origin or "").strip().upper()
     origin_note = (
         f" Country of origin: {origin_upper}."
@@ -255,19 +255,27 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # ("faux leather", "vegan leather", "synthetic silk", "PU leather", etc.)
     # which would otherwise pass through _SILK_RE / _LEATHER_RE unchanged and
     # attract the wrong (higher) duty-code branches.
+    # Material fields from ERP/supplier systems often list components separated by
+    # commas (e.g. "faux silk lining, genuine silk outer shell").  Each segment is
+    # checked independently so a faux qualifier in one segment does not suppress a
+    # genuine-material signal in another.  The desc fallback keeps whole-string
+    # matching since descriptions are free-text, not structured component lists.
+    _mat_segs = material_lower.split(',') if material_lower else []
     is_silk = (
-        bool(_SILK_RE.search(material_lower)) and not bool(_FAUX_SILK_RE.search(material_lower))
-    ) or (
-        not material_lower
-        and bool(_SILK_RE.search(desc))
-        and not bool(_FAUX_SILK_RE.search(desc))
+        any(
+            bool(_SILK_RE.search(seg)) and not bool(_FAUX_SILK_RE.search(seg))
+            for seg in _mat_segs
+        ) if _mat_segs else (
+            bool(_SILK_RE.search(desc)) and not bool(_FAUX_SILK_RE.search(desc))
+        )
     )
     is_leather = (
-        bool(_LEATHER_RE.search(material_lower)) and not bool(_FAUX_LEATHER_RE.search(material_lower))
-    ) or (
-        not material_lower
-        and bool(_LEATHER_RE.search(desc))
-        and not bool(_FAUX_LEATHER_RE.search(desc))
+        any(
+            bool(_LEATHER_RE.search(seg)) and not bool(_FAUX_LEATHER_RE.search(seg))
+            for seg in _mat_segs
+        ) if _mat_segs else (
+            bool(_LEATHER_RE.search(desc)) and not bool(_FAUX_LEATHER_RE.search(desc))
+        )
     )
     # Either "fragrance-free" or "perfume-free" in description or material negates
     # the product being a fragrance/perfume; both flags suppress ALL perfume signals
@@ -292,8 +300,12 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # — is treated as a contradicting signal and suppresses the keyword override.
     # This prevents "chocolate-coloured sofa" (category: furniture) and
     # "chocolate gift bag" (category: bags) from being misclassified as food.
+    # When category is blank, genuine-material signals (is_leather, is_silk) also
+    # suppress confectionery food classification: colour/texture names like "fudge
+    # brown", "toffee" are common in UK leather/fashion product descriptions and
+    # should not override a clear material signal.  category="food" always wins.
     is_food = category_lower == "food" or (
-        is_confectionery and not category_lower
+        is_confectionery and not category_lower and not is_leather and not is_silk
     )
     is_fashion = category_lower == "fashion_accessories" or bool(_FASHION_RE.search(desc))
     # Bag detection: fashion_accessories and food categories override bag keywords.
@@ -489,7 +501,7 @@ def _add_to_review_queue(result: dict):
     if result.get("uk_code") in {ERROR_CODE, UNCLASSIFIED_CODE}:
         return
     raw_val = result.get("value", 0.0)
-    safe_val = round(raw_val, 2) if _is_normalised_float(raw_val) else _normalise_value(raw_val)
+    safe_val = _normalise_value(raw_val)
     # Use the high-value boolean rather than the raw amount: classification only
     # distinguishes values by whether they meet HIGH_VALUE_THRESHOLD, so two
     # sub-threshold prices for the same product produce the same classification
