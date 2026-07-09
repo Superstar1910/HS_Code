@@ -46,8 +46,7 @@ _CONFECTIONERY_RE = _make_word_re(
 )
 _FASHION_RE = _make_word_re(
     "belt", "belts", "wallet", "wallets", "glove", "gloves",
-    "hat", "hats", "cap", "caps", "tie", "ties",
-    "brooch", "brooches", "headband", "headbands",
+    "hat", "hats", "brooch", "brooches", "headband", "headbands",
 )
 _BAG_RE = _make_word_re(
     "bag", "bags", "handbag", "handbags", "purse", "purses",
@@ -138,9 +137,11 @@ def _parse_value(raw) -> tuple[float, str]:
         comma_count = s.count(',')
         dot_count = s.count('.')
         euro_tail = _EURO_DECIMAL_RE.search(s)
-        if comma_count > 1 and euro_tail:
-            # Two+ commas with a decimal-like tail (e.g. "1,250,00") is ambiguous;
-            # the value cannot be reliably parsed so default to zero with a warning.
+        if comma_count > 1:
+            # Any value with multiple commas is ambiguous regardless of the decimal
+            # suffix (e.g. "1,250,00" has a euro-style tail; "1,2,345.00" has a
+            # dot-decimal tail that used to escape this guard).  Neither case can be
+            # reliably parsed; default to zero with a warning.
             return 0.0, " Warning: declared value format is ambiguous (multiple commas); defaulted to £0 for risk assessment."
         if dot_count >= 2 and comma_count == 0:
             # European notation: multiple periods as thousands separators with no
@@ -216,7 +217,10 @@ def _normalise_value(value) -> float:
 def classify_product(description, material, origin, category, value):
     """Normalise inputs then delegate to the cached implementation."""
     v = _normalise_value(value)
-    origin_upper = (origin or "").strip().upper()
+    # _safe_str handles None, np.nan, pd.NA, and all other non-string types that
+    # (x or "") does not: np.nan is truthy, so (np.nan or "") returns np.nan and
+    # np.nan.strip() raises AttributeError; pd.NA raises TypeError on boolean eval.
+    origin_upper = _safe_str(origin).strip().upper()
     origin_note = (
         f" Country of origin: {origin_upper}."
         if origin_upper
@@ -226,9 +230,9 @@ def classify_product(description, material, origin, category, value):
     # Origin is handled here (outside the cache) so products from different countries
     # with identical descriptions/materials/categories share the same cache entry.
     result = dict(_classify_product_cached(
-        (description or "").strip().lower(),
-        (material or "").strip().lower(),
-        (category or "").strip().lower(),
+        _safe_str(description).strip().lower(),
+        _safe_str(material).strip().lower(),
+        _safe_str(category).strip().lower(),
         v >= HIGH_VALUE_THRESHOLD,
     ))
     result["explanation"] = result["explanation"] + origin_note
@@ -498,7 +502,7 @@ def _add_to_review_queue(result: dict):
     Silently ignores ERROR and UNCLASSIFIED items — callers filter these, but
     this guard prevents accidental queue corruption if called directly.
     """
-    if result.get("uk_code") in {ERROR_CODE, UNCLASSIFIED_CODE}:
+    if result.get("uk_code", UNCLASSIFIED_CODE) in {ERROR_CODE, UNCLASSIFIED_CODE}:
         return
     raw_val = result.get("value", 0.0)
     safe_val = _normalise_value(raw_val)
@@ -514,10 +518,10 @@ def _add_to_review_queue(result: dict):
     if key not in st.session_state["review_keys"]:
         st.session_state["review_keys"].add(key)
         st.session_state["review_items"].append({
-            "Product": result.get("description", ""),
+            "Product": _safe_str(result.get("description", "")),
             "Suggested Code": result.get("uk_code", UNCLASSIFIED_CODE),
             "Confidence": _format_confidence(result.get("confidence", 0.0)),
-            "Explanation": result.get("explanation", ""),
+            "Explanation": _safe_str(result.get("explanation", "")),
             "Risk": result.get("risk", RISK_AMBER),
             "Status": STATUS_PENDING,
         })
@@ -545,6 +549,7 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
         )
         st.session_state["audit_log"].append({"Timestamp": ts, "Event": audit_event.format(count=changed) + skipped_note})
         st.toast(toast_msg.format(count=changed), icon=toast_icon)
+        st.session_state["_review_edit_version"] += 1
         st.rerun()
     elif skipped_unclassified:
         st.session_state["audit_log"].append({
@@ -631,26 +636,30 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
         return
 
-    error_count = (result_df["hs6"] == ERROR_CODE).sum()
-    unclassified_count = (result_df["hs6"] == UNCLASSIFIED_CODE).sum()
-    detail_parts = []
-    if unclassified_count:
-        detail_parts.append(f"{unclassified_count} unclassified")
-    if error_count:
-        detail_parts.append(f"{error_count} error{'s' if error_count != 1 else ''}")
-    row_word = "row" if len(result_df) == 1 else "rows"
-    summary = f"Processed {len(result_df)} {row_word}"
-    if detail_parts:
-        summary += f" ({', '.join(detail_parts)})"
-    st.session_state["audit_log"].append({
-        "Timestamp": datetime.now().isoformat(timespec="microseconds"),
-        "Event": f"Bulk upload: {summary} from '{filename}'",
-    })
-    st.session_state["bulk_result"] = {
-        "df": result_df,
-        "summary": summary,
-        "filename": filename,
-    }
+    try:
+        error_count = (result_df["hs6"] == ERROR_CODE).sum()
+        unclassified_count = (result_df["hs6"] == UNCLASSIFIED_CODE).sum()
+        detail_parts = []
+        if unclassified_count:
+            detail_parts.append(f"{unclassified_count} unclassified")
+        if error_count:
+            detail_parts.append(f"{error_count} error{'s' if error_count != 1 else ''}")
+        row_word = "row" if len(result_df) == 1 else "rows"
+        summary = f"Processed {len(result_df)} {row_word}"
+        if detail_parts:
+            summary += f" ({', '.join(detail_parts)})"
+        st.session_state["audit_log"].append({
+            "Timestamp": datetime.now().isoformat(timespec="microseconds"),
+            "Event": f"Bulk upload: {summary} from '{filename}'",
+        })
+        st.session_state["bulk_result"] = {
+            "df": result_df,
+            "summary": summary,
+            "filename": filename,
+        }
+    except Exception as e:
+        st.session_state["_bulk_messages"].append(("error", f"Failed to summarise classification results: {e}"))
+        return
 
     queueable_df = result_df[~result_df["hs6"].isin({ERROR_CODE, UNCLASSIFIED_CODE})]
     _queue_cols = ["description", "value", "uk_code", "confidence", "explanation", "risk"]
@@ -677,6 +686,10 @@ st.session_state.setdefault("bulk_result", None)
 st.session_state.setdefault("_bulk_file_id", None)
 st.session_state.setdefault("_bulk_messages", [])
 st.session_state.setdefault("last_result", None)
+# Version counter for the Review Queue data_editor key.  Incrementing it forces
+# Streamlit to discard the widget's stored edit delta, preventing a stale delta
+# from replaying against freshly-updated item statuses after a bulk action rerun.
+st.session_state.setdefault("_review_edit_version", 0)
 if "seed_logs" not in st.session_state:
     _seed_date = datetime.now().strftime("%Y-%m-%d")
     st.session_state["seed_logs"] = [
@@ -891,7 +904,7 @@ elif page == "Review Queue":
             disabled=["Product", "Suggested Code", "Confidence", "Risk", "Explanation"],
             hide_index=True,
             use_container_width=True,
-            key="review_queue_editor",
+            key=f"review_queue_editor_{st.session_state['_review_edit_version']}",
         )
 
         # Detect per-row status changes: iterate once, track whether anything changed,
@@ -915,6 +928,7 @@ elif page == "Review Queue":
                 })
                 changed = True
         if changed:
+            st.session_state["_review_edit_version"] += 1
             st.rerun()
 
         st.write("**Bulk review actions**")
