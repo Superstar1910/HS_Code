@@ -8,7 +8,7 @@ import re
 from collections import Counter
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 
 st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
 
@@ -85,7 +85,7 @@ _SCARF_RE = re.compile(r'\b(?:scarf|scarves)\b')
 _SILK_RE = re.compile(r'\bsilks?\b(?![-\s]+(?:effect|like|look|feel|finish|touch)\b)')
 _LEATHER_RE = re.compile(r'\bleathers?\b(?![-\s]+(?:look|like|effect|feel|finish|touch)\b)')
 
-# Threshold above which items attract additional customs scrutiny
+# Threshold at or above which items attract additional customs scrutiny
 HIGH_VALUE_THRESHOLD = 1000.00
 
 # Valid risk levels
@@ -264,7 +264,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # checked independently so a faux qualifier in one segment does not suppress a
     # genuine-material signal in another.  The desc fallback keeps whole-string
     # matching since descriptions are free-text, not structured component lists.
-    _mat_segs = material_lower.split(',') if material_lower else []
+    _mat_segs = re.split(r'[,;]', material_lower) if material_lower else []
     is_silk = (
         any(
             bool(_SILK_RE.search(seg)) and not bool(_FAUX_SILK_RE.search(seg))
@@ -691,7 +691,7 @@ st.session_state.setdefault("last_result", None)
 # from replaying against freshly-updated item statuses after a bulk action rerun.
 st.session_state.setdefault("_review_edit_version", 0)
 if "seed_logs" not in st.session_state:
-    _seed_date = datetime.now().strftime("%Y-%m-%d")
+    _seed_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     st.session_state["seed_logs"] = [
         {"Timestamp": f"{_seed_date}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
         {"Timestamp": f"{_seed_date}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
