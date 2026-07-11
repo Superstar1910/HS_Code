@@ -120,7 +120,7 @@ def _parse_value(raw) -> tuple[float, str]:
     The warning is non-empty only when the raw input was absent or invalid
     and has been defaulted to 0.0.
     Handles common CSV formats: "£1,250.00", "$500", "1,000.50",
-    "GBP 250", "250 USD", "EUR1250,00".
+    "GBP 250", "250 USD", "EUR1250,00", "1,250,000", "£12,345,678.90".
     """
     if isinstance(raw, str):
         # Strip currency symbols and ISO 4217 text codes in one pass; strip()
@@ -138,11 +138,28 @@ def _parse_value(raw) -> tuple[float, str]:
         dot_count = s.count('.')
         euro_tail = _EURO_DECIMAL_RE.search(s)
         if comma_count > 1:
-            # Any value with multiple commas is ambiguous regardless of the decimal
-            # suffix (e.g. "1,250,00" has a euro-style tail; "1,2,345.00" has a
-            # dot-decimal tail that used to escape this guard).  Neither case can be
-            # reliably parsed; default to zero with a warning.
-            return 0.0, " Warning: declared value format is ambiguous (multiple commas); defaulted to £0 for risk assessment."
+            # Multiple commas are valid as UK/US thousands separators only when
+            # every inter-comma group is exactly 3 digits and the leading group
+            # is 1–3 digits (e.g. "1,250,000" → 1250000; "1,250,000.50" → 1250000.5).
+            # Anything else (e.g. "1,2,345", "1,250,50") is genuinely ambiguous.
+            # Without this check, large declared values like "£1,250,000" were
+            # silently defaulted to £0, causing HIGH_VALUE_THRESHOLD to be missed
+            # and risk ratings to be under-reported.
+            _mparts = s.split(',')
+            _last_base = _mparts[-1].split('.')[0] if '.' in _mparts[-1] else _mparts[-1]
+            if (
+                _mparts[0].isdigit()
+                and 1 <= len(_mparts[0]) <= 3
+                and all(len(p) == 3 and p.isdigit() for p in _mparts[1:-1])
+                and len(_last_base) == 3
+                and _last_base.isdigit()
+            ):
+                # Strip commas; fall through to float() below.  The subsequent
+                # elif branches are unreachable for this value because comma_count
+                # is still > 1, making the `comma_count == 1` guards false.
+                s = s.replace(',', '')
+            else:
+                return 0.0, " Warning: declared value format is ambiguous (multiple commas); defaulted to £0 for risk assessment."
         if dot_count >= 2 and comma_count == 0:
             # European notation: multiple periods as thousands separators with no
             # decimal part (e.g. "1.250.000" → 1250000). A single period is still
