@@ -43,6 +43,11 @@ _CONFECTIONERY_RE = _make_word_re(
     "snack", "snacks", "cookie", "cookies",
     "sweets", "toffee", "toffees", "fudge",
     "lollipop", "lollipops",
+    # Additional UK confectionery terms standard-rated at 20% VAT:
+    "gummy", "gummies", "marshmallow", "marshmallows",
+    "nougat", "marzipan", "sherbet", "caramel", "praline",
+    "truffle", "truffles", "bonbon", "bonbons", "brittle",
+    "licorice", "liquorice", "jelly",
 )
 _FASHION_RE = _make_word_re(
     "belt", "belts", "wallet", "wallets", "glove", "gloves",
@@ -76,7 +81,7 @@ _PERFUME_RE = re.compile(
     r'\b(?:perfumes?|fragrances?|colognes?|aftershaves?'
     r'|eau[ -]de[ -](?:parfum|toilette|cologne))\b'
 )
-_SCARF_RE = re.compile(r'\b(?:scarf|scarves)\b')
+_SCARF_RE = re.compile(r'\b(?:scarf|scarfs|scarves)\b')
 # Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
 # "leather-look", "leather-feel", etc. which describe synthetic imitations rather
 # than the genuine material, preventing false duty-code upgrades for polyester/PU goods.
@@ -146,17 +151,21 @@ def _parse_value(raw) -> tuple[float, str]:
             # silently defaulted to £0, causing HIGH_VALUE_THRESHOLD to be missed
             # and risk ratings to be under-reported.
             _mparts = s.split(',')
-            _last_base = _mparts[-1].split('.')[0] if '.' in _mparts[-1] else _mparts[-1]
+            _last_dot = _mparts[-1].find('.')
+            _last_base = _mparts[-1][:_last_dot] if _last_dot != -1 else _mparts[-1]
+            _last_dec = _mparts[-1][_last_dot + 1:] if _last_dot != -1 else ''
             if (
                 _mparts[0].isdigit()
                 and 1 <= len(_mparts[0]) <= 3
                 and all(len(p) == 3 and p.isdigit() for p in _mparts[1:-1])
                 and len(_last_base) == 3
                 and _last_base.isdigit()
+                and (_last_dec == '' or _last_dec.isdigit())
             ):
-                # Strip commas; fall through to float() below.  The subsequent
-                # elif branches are unreachable for this value because comma_count
-                # is still > 1, making the `comma_count == 1` guards false.
+                # Strip commas and fall through to float() below.
+                # The euro_tail elif is skipped (comma_count == 1 guard is False).
+                # The else: branch IS entered but its inner comma_count == 1 check
+                # is also False, so s.replace(',','') runs as a no-op.
                 s = s.replace(',', '')
             else:
                 return 0.0, " Warning: declared value format is ambiguous (multiple commas); defaulted to £0 for risk assessment."
@@ -173,6 +182,22 @@ def _parse_value(raw) -> tuple[float, str]:
             else:
                 return 0.0, " Warning: declared value format is ambiguous (mixed dot groups); defaulted to £0 for risk assessment."
         elif euro_tail and comma_count == 1:
+            # Genuine European decimal format: integer part may contain dots only
+            # as thousands separators, where each dot-separated group is exactly
+            # 3 digits (e.g. "1.250,00" → 1250.00, "1.250.000,99" → 1250000.99).
+            # Reject patterns like "1.2,34" where a dot-before-comma integer part
+            # has non-3-digit groups — these are ambiguous and bypass the dot-
+            # before-comma guard in the else branch.
+            ci = s.index(',')
+            integer_part = s[:ci]
+            if '.' in integer_part:
+                int_segs = integer_part.split('.')
+                if not (
+                    int_segs[0].isdigit()
+                    and 1 <= len(int_segs[0]) <= 3
+                    and all(len(p) == 3 and p.isdigit() for p in int_segs[1:])
+                ):
+                    return 0.0, " Warning: declared value format is ambiguous (non-standard European notation); defaulted to £0 for risk assessment."
             s = s.replace('.', '').replace(',', '.')
         else:
             # UK/US path: commas are thousands separators.  Warn on two non-standard
@@ -314,7 +339,12 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     )
     # Non-fragrance beauty products (skincare, make-up, etc.) fall here.
     is_cosmetics = category_lower == "beauty" and not is_perfume
-    is_confectionery = bool(_CONFECTIONERY_RE.search(desc))
+    # Check both desc and material_lower for consistency with is_silk/is_leather.
+    # The is_food guard (category_lower, is_leather, is_silk) prevents false
+    # positives such as "chocolate-brown leather bag" from routing to food.
+    is_confectionery = bool(
+        _CONFECTIONERY_RE.search(desc) or _CONFECTIONERY_RE.search(material_lower)
+    )
     # Confectionery keywords drive food classification only when the category is
     # blank (no signal) or explicitly "food".  Any non-empty category — whether a
     # known type like "bags"/"beauty" or an unknown bulk-CSV value like "electronics"
@@ -415,7 +445,15 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             " Note: confectionery and snack products (e.g. chocolate, biscuits, candy, sweets, toffee, fudge, snacks)"
             " are standard-rated at 20% VAT in the UK."
             if is_confectionery
-            else " Note: most food is zero-rated for VAT in the UK; verify the applicable rate."
+            else (
+                # When category="food" triggers classification without a confectionery keyword,
+                # the item may still be standard-rated (20%) if it is confectionery — alert
+                # the analyst rather than confidently asserting the zero rate.
+                " Note: verify VAT rate — most food is zero-rated in the UK, but confectionery"
+                " (sweets, chocolates, gummies, marshmallows, etc.) is standard-rated at 20%."
+                if category_lower == "food"
+                else " Note: most food is zero-rated for VAT in the UK; verify the applicable rate."
+            )
         )
         return {
             "hs6": "210690",
@@ -490,8 +528,14 @@ def classify_row(row):
         return pd.Series(result)
     except Exception as e:
         row_idx = getattr(row, "name", None)
-        # hasattr(__index__) covers both Python int and numpy integer scalars.
-        display_idx = (row_idx + 1) if hasattr(row_idx, "__index__") else row_idx
+        # hasattr(__index__) covers Python int and numpy integer scalars.
+        # bool is excluded explicitly: bool subclasses int, so True+1=2 and
+        # False+1=1 would produce a misleading "Row 2:"/"Row 1:" prefix.
+        display_idx = (
+            (row_idx + 1)
+            if hasattr(row_idx, "__index__") and not isinstance(row_idx, bool)
+            else row_idx
+        )
         prefix = f"Row {display_idx}: " if display_idx is not None else ""
         msg = f"{prefix}Classification failed: {type(e).__name__}: {str(e)}"
         suffix = val_warning
@@ -930,7 +974,7 @@ elif page == "Review Queue":
         changed = False
         ts = None
         for i, (orig_status, new_status) in enumerate(
-            zip(review_df["Status"], edited_df["Status"])
+            zip(review_df["Status"], edited_df.sort_index()["Status"])
         ):
             if orig_status != new_status:
                 if ts is None:
