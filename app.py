@@ -45,9 +45,9 @@ _CONFECTIONERY_RE = _make_word_re(
     "lollipop", "lollipops",
     # Additional UK confectionery terms standard-rated at 20% VAT:
     "gummy", "gummies", "marshmallow", "marshmallows",
-    "nougat", "marzipan", "sherbet", "caramel", "praline",
-    "truffle", "truffles", "bonbon", "bonbons", "brittle",
-    "licorice", "liquorice", "jelly",
+    "nougat", "marzipan", "sherbet", "praline",
+    "truffle", "truffles", "bonbon", "bonbons",
+    "licorice", "liquorice",
 )
 _FASHION_RE = _make_word_re(
     "belt", "belts", "wallet", "wallets", "glove", "gloves",
@@ -157,6 +157,7 @@ def _parse_value(raw) -> tuple[float, str]:
             if (
                 _mparts[0].isdigit()
                 and 1 <= len(_mparts[0]) <= 3
+                and int(_mparts[0]) != 0   # "0,000,000" is not a valid UK/US large-number format
                 and all(len(p) == 3 and p.isdigit() for p in _mparts[1:-1])
                 and len(_last_base) == 3
                 and _last_base.isdigit()
@@ -339,12 +340,12 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     )
     # Non-fragrance beauty products (skincare, make-up, etc.) fall here.
     is_cosmetics = category_lower == "beauty" and not is_perfume
-    # Check both desc and material_lower for consistency with is_silk/is_leather.
-    # The is_food guard (category_lower, is_leather, is_silk) prevents false
-    # positives such as "chocolate-brown leather bag" from routing to food.
-    is_confectionery = bool(
-        _CONFECTIONERY_RE.search(desc) or _CONFECTIONERY_RE.search(material_lower)
-    )
+    # Only search desc, not material_lower: confectionery keywords such as "caramel",
+    # "truffle", and "nougat" appear routinely as colour, texture, or ingredient
+    # names in fashion and cosmetics material fields, and checking material_lower
+    # would misroute those items to food classification.  desc is the authoritative
+    # product-type signal; material_lower records physical composition.
+    is_confectionery = bool(_CONFECTIONERY_RE.search(desc))
     # Confectionery keywords drive food classification only when the category is
     # blank (no signal) or explicitly "food".  Any non-empty category — whether a
     # known type like "bags"/"beauty" or an unknown bulk-CSV value like "electronics"
@@ -441,19 +442,14 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
         }
     elif is_food:
         food_vat = "20%" if is_confectionery else "0%"
+        # When category="food" triggers without a confectionery keyword the item may
+        # still be standard-rated — alert the analyst rather than asserting zero rate.
         vat_note = (
             " Note: confectionery and snack products (e.g. chocolate, biscuits, candy, sweets, toffee, fudge, snacks)"
             " are standard-rated at 20% VAT in the UK."
             if is_confectionery
-            else (
-                # When category="food" triggers classification without a confectionery keyword,
-                # the item may still be standard-rated (20%) if it is confectionery — alert
-                # the analyst rather than confidently asserting the zero rate.
-                " Note: verify VAT rate — most food is zero-rated in the UK, but confectionery"
-                " (sweets, chocolates, gummies, marshmallows, etc.) is standard-rated at 20%."
-                if category_lower == "food"
-                else " Note: most food is zero-rated for VAT in the UK; verify the applicable rate."
-            )
+            else " Note: verify VAT rate — most food is zero-rated in the UK, but confectionery"
+            " (sweets, chocolates, gummies, marshmallows, etc.) is standard-rated at 20%."
         )
         return {
             "hs6": "210690",
