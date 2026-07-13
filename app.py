@@ -307,7 +307,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # checked independently so a faux qualifier in one segment does not suppress a
     # genuine-material signal in another.  The desc fallback keeps whole-string
     # matching since descriptions are free-text, not structured component lists.
-    _mat_segs = re.split(r'[,;]', material_lower) if material_lower else []
+    _mat_segs = [seg.strip() for seg in re.split(r'[,;]', material_lower) if seg.strip()] if material_lower else []
     is_silk = (
         any(
             bool(_SILK_RE.search(seg)) and not bool(_FAUX_SILK_RE.search(seg))
@@ -682,7 +682,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     # Warn if pre-existing result columns will be overwritten.
     overlapping = sorted(col for col in RESULT_COLUMNS if col in df.columns)
     if overlapping:
-        st.session_state["_bulk_messages"].append(("warning", f"The following columns from your CSV will be overwritten by classification results: {', '.join(overlapping)}"))
+        st.session_state["_bulk_messages"].append(("warning", f"The following columns from your CSV will be replaced by classification results: {', '.join(overlapping)}"))
     # Drop any pre-existing result columns to avoid duplicate columns after concat.
     input_df = df.drop(columns=overlapping).reset_index(drop=True)
     try:
@@ -970,7 +970,7 @@ elif page == "Review Queue":
         changed = False
         ts = None
         for i, (orig_status, new_status) in enumerate(
-            zip(review_df["Status"], edited_df.sort_index()["Status"])
+            zip(review_df["Status"], edited_df["Status"])
         ):
             if orig_status != new_status:
                 if ts is None:
