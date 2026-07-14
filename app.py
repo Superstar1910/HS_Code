@@ -586,7 +586,6 @@ def _add_to_review_queue(result: dict):
 
 def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_icon: str) -> None:
     """Set all pending review-queue items to new_status and log the action."""
-    ts = datetime.now().isoformat(timespec="microseconds")
     changed = 0
     skipped_unclassified = 0
     for item in st.session_state["review_items"]:
@@ -599,6 +598,7 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
             item["Status"] = new_status
             changed += 1
     if changed > 0:
+        ts = datetime.now().isoformat(timespec="microseconds")
         skipped_note = (
             f"; {skipped_unclassified} item(s) skipped (unclassified or errored — require manual code assignment)"
             if skipped_unclassified
@@ -609,6 +609,7 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
         st.session_state["_review_edit_version"] += 1
         st.rerun()
     elif skipped_unclassified:
+        ts = datetime.now().isoformat(timespec="microseconds")
         st.session_state["audit_log"].append({
             "Timestamp": ts,
             "Event": (
@@ -949,6 +950,8 @@ elif page == "Review Queue":
         review_df = pd.DataFrame(items, columns=display_cols)
 
         # Editable table: Status column is a dropdown; all other columns are read-only.
+        # num_rows="fixed" prevents row deletion/insertion so the zip-based status-sync
+        # loop below always compares items[i] against the correct edited row at index i.
         edited_df = st.data_editor(
             review_df,
             column_config={
@@ -959,6 +962,7 @@ elif page == "Review Queue":
                 ),
             },
             disabled=["Product", "Suggested Code", "Confidence", "Risk", "Explanation"],
+            num_rows="fixed",
             hide_index=True,
             use_container_width=True,
             key=f"review_queue_editor_{st.session_state['_review_edit_version']}",
