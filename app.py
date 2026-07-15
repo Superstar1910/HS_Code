@@ -241,20 +241,42 @@ def _parse_value(raw) -> tuple[float, str]:
 
 
 def _is_normalised_float(value) -> bool:
-    """Return True when value is already a finite, non-negative float.
+    """Return True when value is already a finite, non-negative number.
 
     Used as a fast-path guard to skip a redundant _parse_value round-trip when
     the caller (e.g. classify_row) has already parsed the value via _parse_value.
+    Accepts Python float, int, and numpy numeric types (e.g. np.float64) that are
+    coercible to float — but not bool (which subclasses int) or str.
     """
-    return isinstance(value, float) and math.isfinite(value) and value >= 0
+    if isinstance(value, (bool, str)):
+        return False
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(v) and v >= 0
 
 
 def _normalise_value(value) -> float:
     """Convert value to a finite, non-negative float rounded to pence."""
     if _is_normalised_float(value):
-        return round(value, 2)
+        return round(float(value), 2)
     v, _ = _parse_value(value)
     return v
+
+
+def _safe_str(v) -> str:
+    """Convert a value to string, returning empty string for NaN/None."""
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v
+    try:
+        if pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(v)
 
 
 def classify_product(description, material, origin, category, value):
@@ -377,7 +399,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # (not is_fashion) because category="bags" on an item whose description says only
     # "belt" is likely a data-entry error; the description is the authoritative signal.
     _bag_by_keyword = _bag_keyword and category_lower != "fashion_accessories" and not is_food
-    _bag_by_category = category_lower == "bags" and not is_fashion
+    _bag_by_category = category_lower == "bags" and not is_fashion and not is_food
     is_bag = _bag_by_keyword or _bag_by_category
 
     if is_scarf and is_silk:
@@ -491,20 +513,6 @@ def _format_confidence(conf) -> str:
         return f"{min(100, max(0, round(float(conf) * 100)))}%"
     except (TypeError, ValueError):
         return "0%"
-
-
-def _safe_str(v) -> str:
-    """Convert a value to string, returning empty string for NaN/None."""
-    if v is None:
-        return ""
-    if isinstance(v, str):
-        return v
-    try:
-        if pd.isna(v):
-            return ""
-    except (TypeError, ValueError):
-        pass
-    return str(v)
 
 
 def classify_row(row):
