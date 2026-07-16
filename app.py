@@ -368,20 +368,22 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # would misroute those items to food classification.  desc is the authoritative
     # product-type signal; material_lower records physical composition.
     is_confectionery = bool(_CONFECTIONERY_RE.search(desc))
+    is_fashion = category_lower == "fashion_accessories" or bool(_FASHION_RE.search(desc))
     # Confectionery keywords drive food classification only when the category is
     # blank (no signal) or explicitly "food".  Any non-empty category — whether a
     # known type like "bags"/"beauty" or an unknown bulk-CSV value like "electronics"
     # — is treated as a contradicting signal and suppresses the keyword override.
     # This prevents "chocolate-coloured sofa" (category: furniture) and
     # "chocolate gift bag" (category: bags) from being misclassified as food.
-    # When category is blank, genuine-material signals (is_leather, is_silk) also
-    # suppress confectionery food classification: colour/texture names like "fudge
-    # brown", "toffee" are common in UK leather/fashion product descriptions and
-    # should not override a clear material signal.  category="food" always wins.
+    # When category is blank, genuine-material signals (is_leather, is_silk) and
+    # fashion-item keywords (is_fashion) also suppress confectionery food
+    # classification: colour/texture names like "fudge brown", "toffee", and
+    # "chocolate" appear routinely in fashion product descriptions ("chocolate
+    # wallet", "toffee belt") and should not override a clear product-type signal.
+    # category="food" always wins regardless of other flags.
     is_food = category_lower == "food" or (
-        is_confectionery and not category_lower and not is_leather and not is_silk
+        is_confectionery and not category_lower and not is_leather and not is_silk and not is_fashion
     )
-    is_fashion = category_lower == "fashion_accessories" or bool(_FASHION_RE.search(desc))
     # Bag detection: fashion_accessories and food categories override bag keywords.
     # fashion_accessories: "handbag charm" is an accessory, not a bag.
     # food: "chocolate gift bag" is food, not a handbag — without this guard the
