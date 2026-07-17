@@ -89,6 +89,8 @@ _SCARF_RE = re.compile(r'\b(?:scarf|scarfs|scarves)\b')
 # fields (e.g. "woven silks", "fine leathers") and bulk CSV exports.
 _SILK_RE = re.compile(r'\bsilks?\b(?![-\s]+(?:effect|like|look|feel|finish|touch)\b)')
 _LEATHER_RE = re.compile(r'\bleathers?\b(?![-\s]+(?:look|like|effect|feel|finish|touch)\b)')
+# Compiled separator for splitting material fields on commas or semicolons.
+_MAT_SEP_RE = re.compile(r'[,;]')
 
 # Threshold at or above which items attract additional customs scrutiny
 HIGH_VALUE_THRESHOLD = 1000.00
@@ -163,14 +165,12 @@ def _parse_value(raw) -> tuple[float, str]:
                 and _last_base.isdigit()
                 and (_last_dec == '' or _last_dec.isdigit())
             ):
-                # Strip commas and fall through to float() below.
-                # The euro_tail elif is skipped (comma_count == 1 guard is False).
-                # The else: branch IS entered but its inner comma_count == 1 check
-                # is also False, so s.replace(',','') runs as a no-op.
+                # Strip commas; the elif/else chain below is skipped because
+                # no elif condition can match when comma_count > 1.
                 s = s.replace(',', '')
             else:
                 return 0.0, " Warning: declared value format is ambiguous (multiple commas); defaulted to £0 for risk assessment."
-        if dot_count >= 2 and comma_count == 0:
+        elif dot_count >= 2 and comma_count == 0:
             # European notation: multiple periods as thousands separators with no
             # decimal part (e.g. "1.250.000" → 1250000). A single period is still
             # treated as a decimal point by the UK/US path below.
@@ -329,23 +329,20 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # checked independently so a faux qualifier in one segment does not suppress a
     # genuine-material signal in another.  The desc fallback keeps whole-string
     # matching since descriptions are free-text, not structured component lists.
-    _mat_segs = [seg.strip() for seg in re.split(r'[,;]', material_lower) if seg.strip()] if material_lower else []
-    is_silk = (
-        any(
-            bool(_SILK_RE.search(seg)) and not bool(_FAUX_SILK_RE.search(seg))
-            for seg in _mat_segs
-        ) if _mat_segs else (
-            bool(_SILK_RE.search(desc)) and not bool(_FAUX_SILK_RE.search(desc))
-        )
-    )
-    is_leather = (
-        any(
-            bool(_LEATHER_RE.search(seg)) and not bool(_FAUX_LEATHER_RE.search(seg))
-            for seg in _mat_segs
-        ) if _mat_segs else (
-            bool(_LEATHER_RE.search(desc)) and not bool(_FAUX_LEATHER_RE.search(desc))
-        )
-    )
+    _mat_segs = [seg.strip() for seg in _MAT_SEP_RE.split(material_lower) if seg.strip()] if material_lower else []
+    if _mat_segs:
+        is_silk = False
+        is_leather = False
+        for _seg in _mat_segs:
+            if not is_silk and bool(_SILK_RE.search(_seg)) and not bool(_FAUX_SILK_RE.search(_seg)):
+                is_silk = True
+            if not is_leather and bool(_LEATHER_RE.search(_seg)) and not bool(_FAUX_LEATHER_RE.search(_seg)):
+                is_leather = True
+            if is_silk and is_leather:
+                break
+    else:
+        is_silk = bool(_SILK_RE.search(desc)) and not bool(_FAUX_SILK_RE.search(desc))
+        is_leather = bool(_LEATHER_RE.search(desc)) and not bool(_FAUX_LEATHER_RE.search(desc))
     # Either "fragrance-free" or "perfume-free" in description or material negates
     # the product being a fragrance/perfume; both flags suppress ALL perfume signals
     # (including cologne, aftershave, eau-de) not just the keyword they name.
