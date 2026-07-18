@@ -50,7 +50,7 @@ _CONFECTIONERY_RE = _make_word_re(
     "licorice", "liquorice",
 )
 _FASHION_RE = _make_word_re(
-    "belt", "belts", "wallet", "wallets", "glove", "gloves",
+    "belt", "belts", "glove", "gloves",
     "hat", "hats", "brooch", "brooches", "headband", "headbands",
 )
 _BAG_RE = _make_word_re(
@@ -58,6 +58,10 @@ _BAG_RE = _make_word_re(
     "tote", "totes", "clutch", "clutches", "satchel", "satchels",
     "backpack", "backpacks", "rucksack", "rucksacks",
     "briefcase", "briefcases",
+    # Wallets and coin purses are personal goods containers (HS 4202),
+    # not clothing accessories (HS 6217).  They are intentionally excluded
+    # from _FASHION_RE so leather wallets route to the 4202 branch.
+    "wallet", "wallets",
 )
 _FREE_MARKER_RE = re.compile(
     r'\b(?:fragrance|perfume)[-–— ]free\b'   # fragrance-free, perfume free, etc.
@@ -174,11 +178,16 @@ def _parse_value(raw) -> tuple[float, str]:
             # European notation: multiple periods as thousands separators with no
             # decimal part (e.g. "1.250.000" → 1250000). A single period is still
             # treated as a decimal point by the UK/US path below.
-            # Only strip when every inter-dot segment is exactly 3 digits; a
-            # trailing 2-digit group (e.g. "1.250.00") indicates a misplaced
-            # decimal and is ambiguous — warn rather than produce a 100× error.
+            # Only strip when every segment is all-digits and exactly 3 chars
+            # (except the leading group which may be 1–3 digits); a trailing
+            # 2-digit group (e.g. "1.250.00") or any non-digit segment is
+            # ambiguous — warn rather than produce a wrong result.
             parts = s.split('.')
-            if parts[0] and len(parts[0]) <= 3 and all(len(p) == 3 for p in parts[1:]):
+            if (
+                parts[0].isdigit()
+                and len(parts[0]) <= 3
+                and all(len(p) == 3 and p.isdigit() for p in parts[1:])
+            ):
                 s = s.replace('.', '')
             else:
                 return 0.0, " Warning: declared value format is ambiguous (mixed dot groups); defaulted to £0 for risk assessment."
@@ -415,11 +424,11 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
         return {
             "hs6": "420221",
             "uk_code": "4202210000",
-            "confidence": 0.88,
+            "confidence": 0.82,
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "16%",
             "vat": "20%",
-            "explanation": "Classified under handbags with outer surface of leather." + hv_note,
+            "explanation": "Classified under leather travel goods and handbags (HS 4202); verify specific subheading — handbags: 4202.21, wallets and small articles: 4202.31/4202.32." + hv_note,
         }
     elif is_bag:
         return {
@@ -429,7 +438,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "3.7%",
             "vat": "20%",
-            "explanation": "Classified under handbags with other outer surface; verify material composition for precise subheading." + hv_note,
+            "explanation": "Classified under travel goods, handbags and similar containers (HS 4202); verify material composition for precise subheading — leather surface attracts 4202.21/4202.31 (16% duty)." + hv_note,
         }
     elif is_scarf:
         return {
