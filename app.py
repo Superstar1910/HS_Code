@@ -62,6 +62,8 @@ _BAG_RE = _make_word_re(
     # not clothing accessories (HS 6217).  They are intentionally excluded
     # from _FASHION_RE so leather wallets route to the 4202 branch.
     "wallet", "wallets",
+    "pouch", "pouches",
+    "crossbody", "crossbodies",
 )
 _FREE_MARKER_RE = re.compile(
     r'\b(?:fragrance|perfume)[-–— ]free\b'   # fragrance-free, perfume free, etc.
@@ -85,7 +87,7 @@ _PERFUME_RE = re.compile(
     r'\b(?:perfumes?|fragrances?|colognes?|aftershaves?'
     r'|eau[ -]de[ -](?:parfum|toilette|cologne))\b'
 )
-_SCARF_RE = re.compile(r'\b(?:scarf|scarfs|scarves)\b')
+_SCARF_RE = re.compile(r'\b(?:scarf|scarfs|scarves|shawl|shawls)\b')
 # Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
 # "leather-look", "leather-feel", etc. which describe synthetic imitations rather
 # than the genuine material, preventing false duty-code upgrades for polyester/PU goods.
@@ -418,7 +420,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             "risk": RISK_RED if high_value else RISK_GREEN,
             "duty": "8%",
             "vat": "20%",
-            "explanation": "Classified under silk scarves based on material composition and accessory type." + hv_note,
+            "explanation": "Classified under silk scarves, shawls and similar articles based on material composition and accessory type." + hv_note,
         }
     elif is_bag and is_leather:
         return {
@@ -448,7 +450,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             "risk": RISK_RED if high_value else RISK_GREEN,
             "duty": "12%",
             "vat": "20%",
-            "explanation": "Classified under scarves and similar articles (non-silk); verify fibre composition for precise subheading (wool: 621420, synthetic fibres: 621430, other fibres: 621490)." + hv_note,
+            "explanation": "Classified under scarves, shawls and similar articles (non-silk); verify fibre composition for precise subheading (wool: 621420, synthetic fibres: 621430, other fibres: 621490)." + hv_note,
         }
     elif is_perfume:
         return {
@@ -940,7 +942,7 @@ elif page == "Bulk Upload":
         result_df = bulk["df"]
         error_rows = int((result_df["hs6"] == ERROR_CODE).sum())
         unclassified_rows = int((result_df["hs6"] == UNCLASSIFIED_CODE).sum())
-        if error_rows == len(result_df):
+        if error_rows + unclassified_rows == len(result_df):
             st.error(bulk["summary"])
         elif error_rows + unclassified_rows > 0:
             st.warning(bulk["summary"])
