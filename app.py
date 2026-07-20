@@ -70,6 +70,19 @@ _FREE_MARKER_RE = re.compile(
     r'|\b(?:no|without)\s+(?:fragrance|perfume)\b'  # no fragrance, without perfume
     r'|\bunscented\b'                                # unscented
 )
+# Restricted pattern for material-field perfume detection.  Deliberately excludes
+# bare "fragrance" / "fragrances" because those are the standard INCI ingredient
+# names that appear in virtually every fragranced cosmetic material list
+# ("aqua, glycerin, fragrance") and would otherwise cause face creams, body
+# lotions, and similar beauty products to be misclassified as perfumes.  Only
+# compound forms ("fragrance compounds", "fragrance oil") and unambiguous product-
+# type terms (perfume, cologne, eau de …) are matched in material fields.
+_PERFUME_MATERIAL_RE = re.compile(
+    r'\b(?:perfumes?|colognes?|aftershaves?'
+    r'|eau[ -]de[ -](?:parfum|toilette|cologne)'
+    r'|fragrance\s+(?:compounds?|oils?|bases?|concentrates?)'
+    r')\b'
+)
 # Preceding qualifiers that indicate a synthetic imitation rather than the genuine
 # material.  These complement the negative-lookahead approach used in _SILK_RE and
 # _LEATHER_RE (which only catch following modifiers like "silk-effect", "leather-look")
@@ -135,6 +148,11 @@ def _parse_value(raw) -> tuple[float, str]:
     Handles common CSV formats: "£1,250.00", "$500", "1,000.50",
     "GBP 250", "250 USD", "EUR1250,00", "1,250,000", "£12,345,678.90".
     """
+    # bool subclasses int, so float(True)==1.0 and float(False)==0.0 would silently
+    # produce misleading values (True=£1, False=£0).  Catch this before the numeric
+    # path so callers get a warning instead of a wrong but plausible-looking result.
+    if isinstance(raw, bool):
+        return 0.0, " Warning: declared value was not a number; defaulted to £0 for risk assessment."
     if isinstance(raw, str):
         # Strip currency symbols and ISO 4217 text codes in one pass; strip()
         # afterward removes any whitespace left between the code and the number
@@ -357,16 +375,19 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # Either "fragrance-free" or "perfume-free" in description or material negates
     # the product being a fragrance/perfume; both flags suppress ALL perfume signals
     # (including cologne, aftershave, eau-de) not just the keyword they name.
-    # Fragrance is checked in both desc and material_lower for consistency with how
-    # is_silk and is_leather inspect both fields (e.g. "alcohol base and fragrance
-    # compounds" in material correctly triggers perfume classification).
+    # Description uses the full _PERFUME_RE (including bare "fragrance"/"fragrances"
+    # as product-type words).  Material uses the narrower _PERFUME_MATERIAL_RE, which
+    # excludes bare "fragrance"/"fragrances" because those are standard INCI ingredient
+    # names in cosmetics — matching them would misclassify face creams and body lotions
+    # as perfumes.  Compound forms ("fragrance compounds", "fragrance oil") and
+    # product-type terms ("eau de parfum", "cologne") are still matched in material.
     # category_lower == "beauty" is intentionally NOT included: it is too broad and
     # would misclassify all cosmetics (face creams, lipstick, etc.) as perfumes.
     _free_marker = bool(
         _FREE_MARKER_RE.search(desc) or _FREE_MARKER_RE.search(material_lower)
     )
     is_perfume = not _free_marker and bool(
-        _PERFUME_RE.search(desc) or _PERFUME_RE.search(material_lower)
+        _PERFUME_RE.search(desc) or _PERFUME_MATERIAL_RE.search(material_lower)
     )
     # Non-fragrance beauty products (skincare, make-up, etc.) fall here.
     is_cosmetics = category_lower == "beauty" and not is_perfume
@@ -915,12 +936,17 @@ elif page == "Bulk Upload":
         # MD5 of file contents is used as the dedup key so two different files
         # with the same name and byte size are still treated as distinct.
         raw_bytes = uploaded.getvalue()
-        # usedforsecurity=False is required on FIPS-enabled Python 3.9+ systems;
-        # the TypeError fallback keeps compatibility with Python 3.8.
+        # usedforsecurity=False is required on FIPS-enabled Python 3.9+ systems.
+        # Python 3.8 doesn't accept that kwarg (TypeError); on FIPS Python 3.8 the
+        # plain md5() fallback also fails with ValueError, so fall back to SHA-256
+        # (always available, including in FIPS mode) purely for file-identity dedup.
         try:
             _hex = hashlib.md5(raw_bytes, usedforsecurity=False).hexdigest()
         except TypeError:
-            _hex = hashlib.md5(raw_bytes).hexdigest()
+            try:
+                _hex = hashlib.md5(raw_bytes).hexdigest()
+            except ValueError:
+                _hex = hashlib.sha256(raw_bytes).hexdigest()
         file_id = (uploaded.name, _hex)
         if st.session_state["_bulk_file_id"] != file_id:
             _process_bulk_upload(raw_bytes, uploaded.name, file_id)
