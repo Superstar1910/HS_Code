@@ -91,6 +91,7 @@ _PERFUME_MATERIAL_RE = re.compile(
 # branches and attract the wrong (higher) duty rates.
 _FAUX_SILK_RE = re.compile(
     r'\b(?:faux|vegan|synthetic|artificial|imitation|fake)[-\s]+silks?\b'
+    r'|\bman[-\s]?made[-\s]+silks?\b'
 )
 _FAUX_LEATHER_RE = re.compile(
     r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane|eco|bonded)[-\s]+leathers?\b'
@@ -100,13 +101,34 @@ _PERFUME_RE = re.compile(
     r'\b(?:perfumes?|fragrances?|colognes?|aftershaves?'
     r'|eau[ -]de[ -](?:parfum|toilette|cologne))\b'
 )
+# Non-perfume products whose description may contain "fragrance" as a modifier
+# or ingredient name rather than as a product-type term.  Matched against desc
+# to suppress false is_perfume signals for candles, diffusers, and fragrance oils,
+# which are HS 3406/3307/3302 respectively, not HS 3303 toilet waters.
+_FRAGRANCE_NON_PERFUME_RE = re.compile(
+    r'\bfragrances?\s+(?:candle|candles|diffuser|diffusers|oil|oils|lamp|lamps|wax|warmer|warmers)\b'
+    r'|\b(?:scented\s+candle|scented\s+candles|reed\s+diffuser|reed\s+diffusers'
+    r'|wax\s+melt|wax\s+melts|oil\s+burner|oil\s+burners|aromatherapy\s+diffuser)\b'
+)
+# Pre-compiled pattern to strip truffle words for culinary vs confection disambiguation.
+_TRUFFLE_WORD_RE = re.compile(r'\btruffles?\b')
+# Culinary truffle (Tuber genus fungi) context: species qualifiers ("black truffle",
+# "white truffle") or preparation/ingredient terms ("truffle oil", "truffle pasta").
+# Used to suppress is_confectionery when "truffle"/"truffles" is the sole confectionery
+# signal but the product is clearly a food ingredient, not a chocolate confection.
+_TRUFFLE_CULINARY_RE = re.compile(
+    r'\b(?:black|white|summer|winter|perigord|burgundy|fresh|dried)\s+truffles?\b'
+    r'|\btruffles?\s+(?:oil|oils|sauce|sauces|paste|pastes|salt|shavings?|carpaccio|vinaigrette)\b'
+    r'|\btruffles?\b.*\b(?:oil|sauce|paste|risotto|pasta|mushroom|mushrooms)\b'
+    r'|\b(?:oil|sauce|paste|risotto|pasta|mushroom|mushrooms)\b.*\btruffles?\b'
+)
 _SCARF_RE = re.compile(r'\b(?:scarf|scarfs|scarves|shawl|shawls)\b')
 # Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
 # "leather-look", "leather-feel", etc. which describe synthetic imitations rather
 # than the genuine material, preventing false duty-code upgrades for polyester/PU goods.
 # s? covers the plural ("silks", "leathers") which appears in supplier-facing material
 # fields (e.g. "woven silks", "fine leathers") and bulk CSV exports.
-_SILK_RE = re.compile(r'\bsilks?\b(?![-\s]+(?:effect|like|look|feel|finish|touch)\b)')
+_SILK_RE = re.compile(r'\bsilks?\b(?![-\s]+(?:effect|like|look|feel|finish|touch|screen|road)\b)')
 _LEATHER_RE = re.compile(r'\bleathers?\b(?![-\s]+(?:look|like|effect|feel|finish|touch)\b)')
 # Compiled separator for splitting material fields on commas or semicolons.
 _MAT_SEP_RE = re.compile(r'[,;]')
@@ -176,6 +198,8 @@ def _parse_value(raw) -> tuple[float, str]:
             # Without this check, large declared values like "£1,250,000" were
             # silently defaulted to £0, causing HIGH_VALUE_THRESHOLD to be missed
             # and risk ratings to be under-reported.
+            if s.startswith('-'):
+                return 0.0, " Warning: declared value was negative; defaulted to £0 for risk assessment."
             _mparts = s.split(',')
             _last_dot = _mparts[-1].find('.')
             _last_base = _mparts[-1][:_last_dot] if _last_dot != -1 else _mparts[-1]
@@ -206,6 +230,7 @@ def _parse_value(raw) -> tuple[float, str]:
             if (
                 parts[0].isdigit()
                 and len(parts[0]) <= 3
+                and int(parts[0]) != 0   # "0.000.000" is not a valid European thousands format
                 and all(len(p) == 3 and p.isdigit() for p in parts[1:])
             ):
                 s = s.replace('.', '')
@@ -243,6 +268,23 @@ def _parse_value(raw) -> tuple[float, str]:
                     return 0.0, " Warning: declared value format is ambiguous (dot before comma without standard decimal suffix); defaulted to £0 for risk assessment."
                 if len(s[ci + 1:di]) != 3:
                     return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
+            elif comma_count == 0 and dot_count == 1:
+                # Single dot with exactly 3 decimal digits is ambiguous: in UK/US
+                # notation "1.250" means £1.25, but in European ERP exports
+                # "1.250" is a thousands separator meaning £1,250.  The two
+                # interpretations differ by a factor of 1,000, which can silently
+                # flip a £1,250 item below HIGH_VALUE_THRESHOLD.  Return a warning
+                # rather than commit silently to one interpretation.
+                di = s.index('.')
+                pre_dot = s[:di]
+                post_dot = s[di + 1:]
+                if pre_dot.isdigit() and len(post_dot) == 3 and post_dot.isdigit():
+                    return 0.0, (
+                        " Warning: declared value format is ambiguous"
+                        " (a single dot followed by exactly 3 digits could be a European"
+                        " thousands separator, e.g. '1.250' = £1,250, or a decimal point,"
+                        " e.g. '1.250' = £1.25); defaulted to £0 for risk assessment."
+                    )
             s = s.replace(',', '')
         cleaned = s
     else:
@@ -386,9 +428,12 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     _free_marker = bool(
         _FREE_MARKER_RE.search(desc) or _FREE_MARKER_RE.search(material_lower)
     )
+    # _FRAGRANCE_NON_PERFUME_RE guards "fragrance candle", "fragrance diffuser",
+    # "fragrance oil" etc. from matching the bare "fragrance" alternative in
+    # _PERFUME_RE.  These products are HS 3406/3307/3302, not HS 3303 toilet waters.
     is_perfume = not _free_marker and bool(
         _PERFUME_RE.search(desc) or _PERFUME_MATERIAL_RE.search(material_lower)
-    )
+    ) and not bool(_FRAGRANCE_NON_PERFUME_RE.search(desc))
     # Non-fragrance beauty products (skincare, make-up, etc.) fall here.
     is_cosmetics = category_lower == "beauty" and not is_perfume
     # Only search desc, not material_lower: confectionery keywords such as "caramel",
@@ -397,6 +442,19 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # would misroute those items to food classification.  desc is the authoritative
     # product-type signal; material_lower records physical composition.
     is_confectionery = bool(_CONFECTIONERY_RE.search(desc))
+    # Culinary truffle guard: "truffle"/"truffles" is polysemous — it denotes both
+    # a chocolate confection (standard-rated at 20% VAT) and Tuber genus fungi
+    # (zero-rated food ingredient).  If "truffle"/"truffles" is the FIRST (and
+    # potentially only) confectionery keyword and a culinary-context term is also
+    # present, re-check whether any other confectionery keyword remains after
+    # stripping the truffle words.  If not, suppress is_confectionery to prevent
+    # "truffle oil" or "black truffle pasta" from attracting 20% VAT.
+    if is_confectionery and _TRUFFLE_CULINARY_RE.search(desc):
+        _first_conf = _CONFECTIONERY_RE.search(desc).group()
+        if _first_conf in ('truffle', 'truffles') and not _CONFECTIONERY_RE.search(
+            _TRUFFLE_WORD_RE.sub('', desc)
+        ):
+            is_confectionery = False
     is_fashion = category_lower == "fashion_accessories" or bool(_FASHION_RE.search(desc))
     # Confectionery keywords drive food classification only when the category is
     # blank (no signal) or explicitly "food".  Any non-empty category — whether a
