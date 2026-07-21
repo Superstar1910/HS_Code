@@ -93,7 +93,7 @@ _FAUX_SILK_RE = re.compile(
     r'\b(?:faux|vegan|synthetic|artificial|imitation|fake)[-\s]+silks?\b'
 )
 _FAUX_LEATHER_RE = re.compile(
-    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane)[-\s]+leathers?\b'
+    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane|eco|bonded)[-\s]+leathers?\b'
 )
 _EURO_DECIMAL_RE = re.compile(r',\d{1,2}$')
 _PERFUME_RE = re.compile(
@@ -772,6 +772,9 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             })
     except Exception as e:
         st.session_state["_bulk_messages"].append(("warning", f"Review queue could not be fully populated: {e}"))
+    # Invalidate the Review Queue data_editor so any stored edit delta from before
+    # the upload does not replay against the newly-added items.
+    st.session_state["_review_edit_version"] += 1
     # _bulk_file_id was already set at the top of this function.
 
 
@@ -853,6 +856,7 @@ elif page == "Classify":
                 try:
                     result = classify_product(desc_clean, mat_clean, orig_clean, category, value)
                 except Exception as exc:
+                    st.session_state["last_result"] = None
                     st.session_state["audit_log"].append({
                         "Timestamp": ts,
                         "Event": f'"{desc_clean}" classification error — {type(exc).__name__}: {exc}',
