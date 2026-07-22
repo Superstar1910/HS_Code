@@ -182,6 +182,8 @@ def _parse_value(raw) -> tuple[float, str]:
         s = _VALUE_STRIP_RE.sub('', raw.strip()).strip()
         if not s:
             return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
+        if s.startswith('-'):
+            return 0.0, " Warning: declared value was negative; defaulted to £0 for risk assessment."
         # Detect European decimal format: comma followed by 1–2 digits at end,
         # with exactly one comma (e.g. "1.250,00" → "1250.00"). The single-comma
         # guard prevents "1,250,00" (two commas, a common typo) from matching the
@@ -198,8 +200,6 @@ def _parse_value(raw) -> tuple[float, str]:
             # Without this check, large declared values like "£1,250,000" were
             # silently defaulted to £0, causing HIGH_VALUE_THRESHOLD to be missed
             # and risk ratings to be under-reported.
-            if s.startswith('-'):
-                return 0.0, " Warning: declared value was negative; defaulted to £0 for risk assessment."
             _mparts = s.split(',')
             _last_dot = _mparts[-1].find('.')
             _last_base = _mparts[-1][:_last_dot] if _last_dot != -1 else _mparts[-1]
@@ -405,15 +405,15 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
         is_silk = False
         is_leather = False
         for _seg in _mat_segs:
-            if not is_silk and bool(_SILK_RE.search(_seg)) and not bool(_FAUX_SILK_RE.search(_seg)):
+            if not is_silk and _SILK_RE.search(_seg) and not _FAUX_SILK_RE.search(_seg):
                 is_silk = True
-            if not is_leather and bool(_LEATHER_RE.search(_seg)) and not bool(_FAUX_LEATHER_RE.search(_seg)):
+            if not is_leather and _LEATHER_RE.search(_seg) and not _FAUX_LEATHER_RE.search(_seg):
                 is_leather = True
             if is_silk and is_leather:
                 break
     else:
-        is_silk = bool(_SILK_RE.search(desc)) and not bool(_FAUX_SILK_RE.search(desc))
-        is_leather = bool(_LEATHER_RE.search(desc)) and not bool(_FAUX_LEATHER_RE.search(desc))
+        is_silk = bool(_SILK_RE.search(desc) and not _FAUX_SILK_RE.search(desc))
+        is_leather = bool(_LEATHER_RE.search(desc) and not _FAUX_LEATHER_RE.search(desc))
     # Either "fragrance-free" or "perfume-free" in description or material negates
     # the product being a fragrance/perfume; both flags suppress ALL perfume signals
     # (including cologne, aftershave, eau-de) not just the keyword they name.
@@ -488,7 +488,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # (not is_fashion) because category="bags" on an item whose description says only
     # "belt" is likely a data-entry error; the description is the authoritative signal.
     _bag_by_keyword = _bag_keyword and category_lower != "fashion_accessories" and not is_food
-    _bag_by_category = category_lower == "bags" and not is_fashion and not is_food
+    _bag_by_category = category_lower == "bags" and not is_fashion and not is_scarf and not is_food
     is_bag = _bag_by_keyword or _bag_by_category
 
     if is_scarf and is_silk:
