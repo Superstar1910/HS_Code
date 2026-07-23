@@ -153,6 +153,10 @@ RESULT_COLUMNS = frozenset({"hs6", "uk_code", "confidence", "risk", "duty", "vat
 ERROR_CODE = "ERROR"
 UNCLASSIFIED_CODE = "UNCLASSIFIED"
 
+# Columns pulled from a classified result_df when populating the review queue
+# during bulk upload.  Defined at module level so the tuple is created once.
+_BULK_QUEUE_COLS = ("description", "value", "uk_code", "confidence", "explanation", "risk")
+
 # Maximum number of distinct (desc, material, category, high_value) tuples held in
 # the classification cache.  Origin is excluded from the key because classification
 # logic is identical regardless of origin — only the explanation note differs, and
@@ -269,16 +273,24 @@ def _parse_value(raw) -> tuple[float, str]:
                 if len(s[ci + 1:di]) != 3:
                     return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
             elif comma_count == 0 and dot_count == 1:
-                # Single dot with exactly 3 decimal digits is ambiguous: in UK/US
-                # notation "1.250" means £1.25, but in European ERP exports
-                # "1.250" is a thousands separator meaning £1,250.  The two
-                # interpretations differ by a factor of 1,000, which can silently
-                # flip a £1,250 item below HIGH_VALUE_THRESHOLD.  Return a warning
-                # rather than commit silently to one interpretation.
+                # Single dot with exactly 3 decimal digits is ambiguous ONLY when the
+                # integer part is non-zero: "1.250" could be £1.25 (decimal) or £1,250
+                # (European thousands), differing by a factor of 1,000 and potentially
+                # flipping a £1,250 item below HIGH_VALUE_THRESHOLD.  When the integer
+                # part is "0" ("0.250", "0.999") the European interpretation would require
+                # a leading-zero thousands group ("0250"), which no standard ERP uses;
+                # treat it unambiguously as a plain decimal (e.g. "0.250" = £0.25).
+                # Mirrors the guard in the multi-comma branch (int(_mparts[0]) != 0)
+                # and the multi-dot branch (int(parts[0]) != 0).
                 di = s.index('.')
                 pre_dot = s[:di]
                 post_dot = s[di + 1:]
-                if pre_dot.isdigit() and len(post_dot) == 3 and post_dot.isdigit():
+                if (
+                    pre_dot.isdigit()
+                    and len(post_dot) == 3
+                    and post_dot.isdigit()
+                    and int(pre_dot) != 0
+                ):
                     return 0.0, (
                         " Warning: declared value format is ambiguous"
                         " (a single dot followed by exactly 3 digits could be a European"
@@ -817,9 +829,8 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         return
 
     queueable_df = result_df[~result_df["hs6"].isin({ERROR_CODE, UNCLASSIFIED_CODE})]
-    _queue_cols = ["description", "value", "uk_code", "confidence", "explanation", "risk"]
     try:
-        for row in queueable_df[_queue_cols].to_dict("records"):
+        for row in queueable_df[list(_BULK_QUEUE_COLS)].to_dict("records"):
             _add_to_review_queue({
                 "description": _safe_str(row.get("description", "")),
                 "value": row.get("value", 0.0),
