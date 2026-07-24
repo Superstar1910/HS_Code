@@ -274,12 +274,17 @@ def _parse_value(raw) -> tuple[float, str]:
                     return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
             elif comma_count == 0 and dot_count == 1:
                 # Single dot with exactly 3 decimal digits is ambiguous ONLY when the
-                # integer part is non-zero: "1.250" could be £1.25 (decimal) or £1,250
-                # (European thousands), differing by a factor of 1,000 and potentially
-                # flipping a £1,250 item below HIGH_VALUE_THRESHOLD.  When the integer
-                # part is "0" ("0.250", "0.999") the European interpretation would require
-                # a leading-zero thousands group ("0250"), which no standard ERP uses;
-                # treat it unambiguously as a plain decimal (e.g. "0.250" = £0.25).
+                # integer part is non-zero AND has at most 3 digits: "1.250" could be
+                # £1.25 (decimal) or £1,250 (European thousands), differing by a factor
+                # of 1,000 and potentially flipping a £1,250 item below
+                # HIGH_VALUE_THRESHOLD.  When the integer part is "0" ("0.250", "0.999")
+                # the European interpretation would require a leading-zero thousands group
+                # ("0250"), which no standard ERP uses; treat it unambiguously as a plain
+                # decimal (e.g. "0.250" = £0.25).
+                # When the integer part has 4+ digits (e.g. "1250.000") the European
+                # thousands-separator interpretation is impossible — a single separator
+                # can only precede a 3-digit group with a 1-3 digit leading segment
+                # (e.g. "1.250", "12.250", "123.250").  Parse these unambiguously.
                 # Mirrors the guard in the multi-comma branch (int(_mparts[0]) != 0)
                 # and the multi-dot branch (int(parts[0]) != 0).
                 di = s.index('.')
@@ -287,6 +292,7 @@ def _parse_value(raw) -> tuple[float, str]:
                 post_dot = s[di + 1:]
                 if (
                     pre_dot.isdigit()
+                    and 1 <= len(pre_dot) <= 3
                     and len(post_dot) == 3
                     and post_dot.isdigit()
                     and int(pre_dot) != 0
@@ -453,7 +459,8 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # names in fashion and cosmetics material fields, and checking material_lower
     # would misroute those items to food classification.  desc is the authoritative
     # product-type signal; material_lower records physical composition.
-    is_confectionery = bool(_CONFECTIONERY_RE.search(desc))
+    _conf_match = _CONFECTIONERY_RE.search(desc)
+    is_confectionery = bool(_conf_match)
     # Culinary truffle guard: "truffle"/"truffles" is polysemous — it denotes both
     # a chocolate confection (standard-rated at 20% VAT) and Tuber genus fungi
     # (zero-rated food ingredient).  If "truffle"/"truffles" is the FIRST (and
@@ -462,7 +469,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # stripping the truffle words.  If not, suppress is_confectionery to prevent
     # "truffle oil" or "black truffle pasta" from attracting 20% VAT.
     if is_confectionery and _TRUFFLE_CULINARY_RE.search(desc):
-        _first_conf = _CONFECTIONERY_RE.search(desc).group()
+        _first_conf = _conf_match.group()
         if _first_conf in ('truffle', 'truffles') and not _CONFECTIONERY_RE.search(
             _TRUFFLE_WORD_RE.sub('', desc)
         ):
