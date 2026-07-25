@@ -49,6 +49,12 @@ _CONFECTIONERY_RE = _make_word_re(
     "nougat", "marzipan", "sherbet", "praline",
     "truffle", "truffles", "bonbon", "bonbons",
     "licorice", "liquorice",
+    # Caramel is included so that "truffle salt caramel" and similar compound
+    # confection names are not incorrectly suppressed by the culinary-truffle
+    # guard (which strips truffle words then re-checks for confectionery keywords;
+    # without "caramel" the guard would fire and suppress is_confectionery for
+    # "truffle salt caramel", routing it to UNCLASSIFIED or wrong 0% VAT).
+    "caramel", "caramels",
 )
 _FASHION_RE = _make_word_re(
     "belt", "belts", "glove", "gloves",
@@ -97,6 +103,17 @@ _FAUX_SILK_RE = re.compile(
 _FAUX_LEATHER_RE = re.compile(
     r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane|eco|bonded)[-\s]+leathers?\b'
 )
+# Explicit "genuine / real / authentic" qualifiers in the same material segment
+# override a co-present faux marker.  This handles supplier material strings that
+# list both materials without a separator, e.g. "genuine leather and faux leather
+# trim" — the genuine qualifier must win so the item is not misclassified as
+# non-leather (and thus under-declared at 3.7% duty instead of 16%).
+_GENUINE_LEATHER_RE = re.compile(r'\b(?:genuine|real|authentic)\s+leathers?\b')
+_GENUINE_SILK_RE = re.compile(r'\b(?:genuine|real|authentic)\s+silks?\b')
+# Matches wallet / coin-purse product types.  Within the leather-bag branch these
+# route to HS 4202.31 (leather outer surface, small articles such as wallets) rather
+# than 4202.21 (handbags), correcting a ~12 pp duty-rate error.
+_WALLET_RE = re.compile(r'\bwallets?\b')
 _EURO_DECIMAL_RE = re.compile(r',\d{1,2}$')
 _PERFUME_RE = re.compile(
     r'\b(?:perfumes?|fragrances?|colognes?|aftershaves?'
@@ -124,6 +141,13 @@ _TRUFFLE_CULINARY_RE = re.compile(
     r'|\b(?:oil|sauce|paste|risotto|pasta|mushroom|mushrooms)\b.*\btruffles?\b'
 )
 _SCARF_RE = re.compile(r'\b(?:scarf|scarfs|scarves|shawl|shawls)\b')
+# Engineering/woodworking "scarf": a scarf joint / scarf weld / scarf plane is a
+# structural splice, not a textile.  These would otherwise route "scarf joint
+# cutters" to HS 621490 (textile scarves, 12% duty) with 0.72 confidence.
+_SCARF_TECHNICAL_RE = re.compile(
+    r'\bscarfs?\s+(?:joint|joints|weld|welds|cut|cuts|plane|planes|ring|rings)\b'
+    r'|\b(?:joint|weld|cut|plane)\s+scarfs?\b'
+)
 # Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
 # "leather-look", "leather-feel", etc. which describe synthetic imitations rather
 # than the genuine material, preventing false duty-code upgrades for polyester/PU goods.
@@ -407,7 +431,10 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     hv_note = " High declared value flagged for additional customs scrutiny." if high_value else ""
 
     # Pre-compute all keyword flags once to avoid redundant regex evaluation.
-    is_scarf = bool(_SCARF_RE.search(desc))
+    # _SCARF_TECHNICAL_RE excludes engineering/woodworking uses of "scarf" (e.g.
+    # "scarf joint cutter") which are not textile articles and must not route to
+    # HS 6214 (scarves, 12% duty).
+    is_scarf = bool(_SCARF_RE.search(desc)) and not bool(_SCARF_TECHNICAL_RE.search(desc))
     # Material is the authoritative source for composition.  Only fall back to
     # description when the material field was not supplied, so that terms like
     # "silk-effect polyester" or "leather-look PU" in a description do not
@@ -421,20 +448,29 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # checked independently so a faux qualifier in one segment does not suppress a
     # genuine-material signal in another.  The desc fallback keeps whole-string
     # matching since descriptions are free-text, not structured component lists.
+    # _GENUINE_LEATHER_RE / _GENUINE_SILK_RE override the faux suppression within a
+    # single unseparated segment that mentions both: "genuine leather and faux leather
+    # trim" must still be flagged as genuine leather.
     _mat_segs = [seg.strip() for seg in _MAT_SEP_RE.split(material_lower) if seg.strip()] if material_lower else []
     if _mat_segs:
         is_silk = False
         is_leather = False
         for _seg in _mat_segs:
-            if not is_silk and _SILK_RE.search(_seg) and not _FAUX_SILK_RE.search(_seg):
-                is_silk = True
-            if not is_leather and _LEATHER_RE.search(_seg) and not _FAUX_LEATHER_RE.search(_seg):
-                is_leather = True
+            if not is_silk and _SILK_RE.search(_seg):
+                if not _FAUX_SILK_RE.search(_seg) or _GENUINE_SILK_RE.search(_seg):
+                    is_silk = True
+            if not is_leather and _LEATHER_RE.search(_seg):
+                if not _FAUX_LEATHER_RE.search(_seg) or _GENUINE_LEATHER_RE.search(_seg):
+                    is_leather = True
             if is_silk and is_leather:
                 break
     else:
-        is_silk = bool(_SILK_RE.search(desc) and not _FAUX_SILK_RE.search(desc))
-        is_leather = bool(_LEATHER_RE.search(desc) and not _FAUX_LEATHER_RE.search(desc))
+        is_silk = bool(_SILK_RE.search(desc) and (
+            not _FAUX_SILK_RE.search(desc) or _GENUINE_SILK_RE.search(desc)
+        ))
+        is_leather = bool(_LEATHER_RE.search(desc) and (
+            not _FAUX_LEATHER_RE.search(desc) or _GENUINE_LEATHER_RE.search(desc)
+        ))
     # Either "fragrance-free" or "perfume-free" in description or material negates
     # the product being a fragrance/perfume; both flags suppress ALL perfume signals
     # (including cologne, aftershave, eau-de) not just the keyword they name.
@@ -524,6 +560,20 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             "explanation": "Classified under silk scarves, shawls and similar articles based on material composition and accessory type." + hv_note,
         }
     elif is_bag and is_leather:
+        # Wallets and similar small leather articles (HS 4202.31) attract the same
+        # 16% duty as handbags (HS 4202.21) but have a distinct commodity code;
+        # exporting the handbag code for a wallet is a declaration error.
+        _is_wallet = bool(_WALLET_RE.search(desc))
+        if _is_wallet:
+            return {
+                "hs6": "420231",
+                "uk_code": "4202310000",
+                "confidence": 0.82,
+                "risk": RISK_RED if high_value else RISK_AMBER,
+                "duty": "16%",
+                "vat": "20%",
+                "explanation": "Classified under leather wallets and similar small articles (HS 4202.31); verify precise subheading — coin purses: 4202.32." + hv_note,
+            }
         return {
             "hs6": "420221",
             "uk_code": "4202210000",
@@ -531,7 +581,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "16%",
             "vat": "20%",
-            "explanation": "Classified under leather travel goods and handbags (HS 4202); verify specific subheading — handbags: 4202.21, wallets and small articles: 4202.31/4202.32." + hv_note,
+            "explanation": "Classified under leather travel goods and handbags (HS 4202.21); verify specific subheading — wallets and small articles: 4202.31/4202.32." + hv_note,
         }
     elif is_bag:
         return {
@@ -578,7 +628,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
         # When category="food" triggers without a confectionery keyword the item may
         # still be standard-rated — alert the analyst rather than asserting zero rate.
         vat_note = (
-            " Note: confectionery and snack products (e.g. chocolate, biscuits, candy, sweets, toffee, fudge, snacks)"
+            " Note: confectionery and snack products (e.g. chocolate, biscuits, candy, sweets, toffee, fudge, caramel, snacks)"
             " are standard-rated at 20% VAT in the UK."
             if is_confectionery
             else " Note: verify VAT rate — most food is zero-rated in the UK, but confectionery"
@@ -628,9 +678,11 @@ def _format_confidence(conf) -> str:
 
 def classify_row(row):
     """Apply classify_product to a DataFrame row; safe for use with df.apply()."""
-    val, val_warning = 0.0, ""
+    # Parse value before the try/except so val is always defined in the except
+    # handler — preserving the correct risk rating even when classify_product
+    # raises.  _parse_value is designed never to raise; this is purely defensive.
+    val, val_warning = _parse_value(row.get("value"))
     try:
-        val, val_warning = _parse_value(row.get("value"))
         result = classify_product(
             _safe_str(row.get("description", "")),
             _safe_str(row.get("material", "")),
@@ -774,14 +826,18 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             encoding="utf-8-sig",
             encoding_errors="replace",
             keep_default_na=False,
+            low_memory=False,
         )
         df.columns = df.columns.str.strip().str.lower()
         # Warn if any cell contains U+FFFD (the Unicode replacement character),
         # which indicates bytes that could not be decoded from the file's encoding.
+        # Generator short-circuits on the first matching column instead of scanning
+        # all columns then discarding the intermediate boolean Series.
         str_cols = df.select_dtypes(include=["object", "string"])
-        if not str_cols.empty and str_cols.apply(
-            lambda col: col.str.contains("\ufffd", regex=False, na=False).any()
-        ).any():
+        if not str_cols.empty and any(
+            col.str.contains("\ufffd", regex=False, na=False).any()
+            for _, col in str_cols.items()
+        ):
             st.session_state["_bulk_messages"].append(("warning", (
                 "Some characters in the CSV could not be decoded and have been "
                 "replaced with \ufffd. Re-save the file as UTF-8 to ensure accurate "
@@ -898,7 +954,12 @@ if page == "Dashboard":
 
     session_items = st.session_state["review_items"]
     session_total = len(session_items)
-    status_counts = Counter(i["Status"] for i in session_items)
+    # Single pass over session_items to build both status and risk counters.
+    status_counts: Counter = Counter()
+    risk_counts: Counter = Counter()
+    for _item in session_items:
+        status_counts[_item["Status"]] += 1
+        risk_counts[_item["Risk"]] += 1
     session_pending = status_counts[STATUS_PENDING]
     session_approved = status_counts[STATUS_APPROVED]
     session_overridden = status_counts[STATUS_OVERRIDDEN]
@@ -913,10 +974,9 @@ if page == "Dashboard":
 
     if session_items:
         st.subheader("Session Risk Distribution")
-        counted = Counter(i["Risk"] for i in session_items)
         risk_df = pd.DataFrame(
             {"Risk": [RISK_GREEN, RISK_AMBER, RISK_RED],
-             "Count": [counted[RISK_GREEN], counted[RISK_AMBER], counted[RISK_RED]]},
+             "Count": [risk_counts[RISK_GREEN], risk_counts[RISK_AMBER], risk_counts[RISK_RED]]},
         )
     else:
         st.subheader("Session Risk Distribution (Demo)")
