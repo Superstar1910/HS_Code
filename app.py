@@ -6,6 +6,7 @@ import io
 import math
 import re
 from collections import Counter
+import numpy as np
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
@@ -174,10 +175,12 @@ def _parse_value(raw) -> tuple[float, str]:
     Handles common CSV formats: "£1,250.00", "$500", "1,000.50",
     "GBP 250", "250 USD", "EUR1250,00", "1,250,000", "£12,345,678.90".
     """
-    # bool subclasses int, so float(True)==1.0 and float(False)==0.0 would silently
-    # produce misleading values (True=£1, False=£0).  Catch this before the numeric
-    # path so callers get a warning instead of a wrong but plausible-looking result.
-    if isinstance(raw, bool):
+    # bool / np.bool_ subclass int, so float(True)==1.0 would silently produce a
+    # misleading £1 value.  Catch both before the numeric path so callers get a
+    # warning instead of a wrong but plausible-looking result.  np.bool_ is NOT a
+    # subclass of Python bool (isinstance(np.bool_(True), bool) is False), so it
+    # must be checked explicitly.
+    if isinstance(raw, (bool, np.bool_)):
         return 0.0, " Warning: declared value was not a number; defaulted to £0 for risk assessment."
     if isinstance(raw, str):
         # Strip currency symbols and ISO 4217 text codes in one pass; strip()
@@ -335,9 +338,9 @@ def _is_normalised_float(value) -> bool:
     Used as a fast-path guard to skip a redundant _parse_value round-trip when
     the caller (e.g. classify_row) has already parsed the value via _parse_value.
     Accepts Python float, int, and numpy numeric types (e.g. np.float64) that are
-    coercible to float — but not bool (which subclasses int) or str.
+    coercible to float — but not bool/np.bool_ (which subclass int) or str.
     """
-    if isinstance(value, (bool, str)):
+    if isinstance(value, (bool, np.bool_, str)):
         return False
     try:
         v = float(value)
@@ -759,7 +762,19 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     st.session_state["_bulk_file_id"] = file_id
     try:
         # Read one extra row so len(df) > 5000 can detect oversized files.
-        df = pd.read_csv(io.BytesIO(file_bytes), nrows=5001, encoding="utf-8-sig", encoding_errors="replace")
+        # keep_default_na=False prevents pandas from silently converting product
+        # descriptions and other text fields that happen to spell "NA", "NULL",
+        # "N/A", "NaN", etc. to NaN, which would cause those rows to be
+        # misclassified as having empty descriptions.  Genuinely missing cells
+        # (empty CSV fields) become "" which _safe_str and _parse_value already
+        # handle identically to NaN.
+        df = pd.read_csv(
+            io.BytesIO(file_bytes),
+            nrows=5001,
+            encoding="utf-8-sig",
+            encoding_errors="replace",
+            keep_default_na=False,
+        )
         df.columns = df.columns.str.strip().str.lower()
         # Warn if any cell contains U+FFFD (the Unicode replacement character),
         # which indicates bytes that could not be decoded from the file's encoding.
