@@ -73,9 +73,9 @@ _BAG_RE = _make_word_re(
     "crossbody", "crossbodies",
 )
 _FREE_MARKER_RE = re.compile(
-    r'\b(?:fragrance|perfume)[-–— ]free\b'   # fragrance-free, perfume free, etc.
-    r'|\b(?:no|without)\s+(?:fragrance|perfume)\b'  # no fragrance, without perfume
-    r'|\bunscented\b'                                # unscented
+    r'\b(?:fragrance|perfume)[-–— ]free\b'                          # fragrance-free, perfume free, etc.
+    r'|\b(?:no|without)\s+(?:added\s+)?(?:fragrances?|perfumes?)\b' # no fragrance/fragrances, no added fragrance
+    r'|\bunscented\b'                                                # unscented
 )
 # Restricted pattern for material-field perfume detection.  Deliberately excludes
 # bare "fragrance" / "fragrances" because those are the standard INCI ingredient
@@ -123,10 +123,19 @@ _PERFUME_RE = re.compile(
 # or ingredient name rather than as a product-type term.  Matched against desc
 # to suppress false is_perfume signals for candles, diffusers, and fragrance oils,
 # which are HS 3406/3307/3302 respectively, not HS 3303 toilet waters.
+# The ingredient-context alternatives ("with fragrances", "added fragrances", etc.)
+# prevent cosmetic descriptions such as "moisturizing lotion with fragrances" from
+# being misclassified as perfume.  The bare "fragrances" term in _PERFUME_RE is
+# intentionally broad (a product titled "Fragrances Gift Set" IS a perfume product),
+# so suppression is applied here via context rather than by excluding the term from
+# _PERFUME_RE itself.  The "with/added/enriched with/infused with" prefixes are
+# unambiguous ingredient-list markers that never introduce perfume product names.
 _FRAGRANCE_NON_PERFUME_RE = re.compile(
     r'\bfragrances?\s+(?:candle|candles|diffuser|diffusers|oil|oils|lamp|lamps|wax|warmer|warmers)\b'
     r'|\b(?:scented\s+candle|scented\s+candles|reed\s+diffuser|reed\s+diffusers'
     r'|wax\s+melt|wax\s+melts|oil\s+burner|oil\s+burners|aromatherapy\s+diffuser)\b'
+    r'|\b(?:with|added|enriched\s+with|infused\s+with)\s+'
+    r'(?:(?:natural|synthetic|artificial|floral|fruity|citrus|botanical|herbal)\s+)?fragrances?\b'
 )
 # Pre-compiled pattern to strip truffle words for culinary vs confection disambiguation.
 _TRUFFLE_WORD_RE = re.compile(r'\btruffles?\b')
@@ -451,7 +460,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # _GENUINE_LEATHER_RE / _GENUINE_SILK_RE override the faux suppression within a
     # single unseparated segment that mentions both: "genuine leather and faux leather
     # trim" must still be flagged as genuine leather.
-    _mat_segs = [s for seg in _MAT_SEP_RE.split(material_lower) if (s := seg.strip())] if material_lower else []
+    _mat_segs = [seg.strip() for seg in _MAT_SEP_RE.split(material_lower) if seg.strip()] if material_lower else []
     if _mat_segs:
         is_silk = False
         is_leather = False
@@ -549,7 +558,11 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     _bag_by_category = category_lower == "bags" and not is_fashion and not is_scarf and not is_food
     is_bag = _bag_by_keyword or _bag_by_category
 
-    if is_scarf and is_silk:
+    # Scarf detection: food category overrides scarf keywords for consistency with the
+    # is_bag guard above — category="food" is treated as an authoritative product-type
+    # signal that suppresses textile classifications, preventing a data-entry error
+    # (e.g. category="food" on a "silk scarf" description) from producing HS 6214.
+    if is_scarf and is_silk and not is_food:
         return {
             "hs6": "621410",
             "uk_code": "6214100090",
@@ -593,7 +606,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             "vat": "20%",
             "explanation": "Classified under travel goods, handbags and similar containers (HS 4202); verify material composition for precise subheading — leather surface attracts 4202.21/4202.31 (16% duty)." + hv_note,
         }
-    elif is_scarf:
+    elif is_scarf and not is_food:
         return {
             "hs6": "621490",
             "uk_code": "6214900000",
