@@ -460,7 +460,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # _GENUINE_LEATHER_RE / _GENUINE_SILK_RE override the faux suppression within a
     # single unseparated segment that mentions both: "genuine leather and faux leather
     # trim" must still be flagged as genuine leather.
-    _mat_segs = [seg.strip() for seg in _MAT_SEP_RE.split(material_lower) if seg.strip()] if material_lower else []
+    _mat_segs = list(filter(None, (seg.strip() for seg in _MAT_SEP_RE.split(material_lower)))) if material_lower else []
     if _mat_segs:
         is_silk = False
         is_leather = False
@@ -806,7 +806,7 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
         # only reset the data_editor widget state unnecessarily.  The audit log
         # entry is persisted in session state and visible on the Audit Trail page.
     else:
-        st.toast("No pending items in the review queue.", icon="ℹ️")
+        st.toast("No pending items to action — all items have already been approved or overridden.", icon="ℹ️")
 
 
 def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, str]) -> None:
@@ -1006,7 +1006,14 @@ elif page == "Classify":
         description = st.text_input("Product Description", "Luxury silk scarf with hand-rolled edges", max_chars=500)
         material = st.text_input("Material Composition", "100% silk", max_chars=200)
         origin = st.text_input("Country of Origin", "IT", max_chars=50)
-        category = st.selectbox("Category", ["fashion_accessories", "bags", "beauty", "food", "other"])
+        category = st.selectbox(
+            "Category",
+            ["fashion_accessories", "bags", "beauty", "food", "other"],
+            help=(
+                "Choose the closest category. 'other' relies solely on description keywords and "
+                "may return UNCLASSIFIED for food or confectionery items — select 'food' for edible products."
+            ),
+        )
         value = st.number_input("Declared Value (£)", min_value=0.0, value=250.0, step=10.0)
 
         if st.button("Run Classification"):
