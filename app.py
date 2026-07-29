@@ -108,8 +108,8 @@ _FAUX_LEATHER_RE = re.compile(
 # list both materials without a separator, e.g. "genuine leather and faux leather
 # trim" — the genuine qualifier must win so the item is not misclassified as
 # non-leather (and thus under-declared at 3.7% duty instead of 16%).
-_GENUINE_LEATHER_RE = re.compile(r'\b(?:genuine|real|authentic)\s+leathers?\b')
-_GENUINE_SILK_RE = re.compile(r'\b(?:genuine|real|authentic)\s+silks?\b')
+_GENUINE_LEATHER_RE = re.compile(r'\b(?:genuine|real|authentic)[-\s]+leathers?\b')
+_GENUINE_SILK_RE = re.compile(r'\b(?:genuine|real|authentic)[-\s]+silks?\b')
 # Matches wallet / coin-purse product types.  Within the leather-bag branch these
 # route to HS 4202.31 (leather outer surface, small articles such as wallets) rather
 # than 4202.21 (handbags), correcting a ~12 pp duty-rate error.
@@ -347,7 +347,9 @@ def _parse_value(raw) -> tuple[float, str]:
         v = float(cleaned)
     except (TypeError, ValueError):
         try:
-            is_missing = pd.isna(raw)
+            # bool() raises ValueError for array-like results (e.g. raw=[250, 300]);
+            # that is caught here so the function never propagates an exception.
+            is_missing = bool(pd.isna(raw))
         except (TypeError, ValueError):
             is_missing = raw is None
         msg = (
