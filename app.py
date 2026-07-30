@@ -153,9 +153,14 @@ _SCARF_RE = re.compile(r'\b(?:scarf|scarfs|scarves|shawl|shawls)\b')
 # Engineering/woodworking "scarf": a scarf joint / scarf weld / scarf plane is a
 # structural splice, not a textile.  These would otherwise route "scarf joint
 # cutters" to HS 621490 (textile scarves, 12% duty) with 0.72 confidence.
+# Garment-construction "shawl": shawl collar / shawl lapel / shawl neckline are
+# structural garment design elements (a folded lapel style), not textile shawls.
+# Without this guard a "silk shawl collar blazer" would be misclassified as a
+# silk scarf (HS 621410, 8% duty) instead of remaining UNCLASSIFIED for review.
 _SCARF_TECHNICAL_RE = re.compile(
     r'\bscarfs?\s+(?:joint|joints|weld|welds|cut|cuts|plane|planes|ring|rings)\b'
     r'|\b(?:joint|weld|cut|plane)\s+scarfs?\b'
+    r'|\bshawl[-\s]+(?:collar|lapel|neckline|neck)\b'
 )
 # Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
 # "leather-look", "leather-feel", etc. which describe synthetic imitations rather
@@ -443,8 +448,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
 
     # Pre-compute all keyword flags once to avoid redundant regex evaluation.
     # _SCARF_TECHNICAL_RE excludes engineering/woodworking uses of "scarf" (e.g.
-    # "scarf joint cutter") which are not textile articles and must not route to
-    # HS 6214 (scarves, 12% duty).
+    # "scarf joint cutter") and garment-construction uses of "shawl" (e.g.
+    # "shawl collar blazer", "shawl lapel jacket") — neither are textile articles
+    # and both must not route to HS 6214 (scarves, 12% duty).
     is_scarf = bool(_SCARF_RE.search(desc)) and not bool(_SCARF_TECHNICAL_RE.search(desc))
     # Material is the authoritative source for composition.  Only fall back to
     # description when the material field was not supplied, so that terms like
