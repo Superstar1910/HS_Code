@@ -46,7 +46,7 @@ _CONFECTIONERY_RE = _make_word_re(
     "lollipop", "lollipops",
     # Additional UK confectionery terms standard-rated at 20% VAT:
     "gummy", "gummies", "marshmallow", "marshmallows",
-    "nougat", "marzipan", "sherbet", "praline",
+    "nougat", "nougats", "marzipan", "marzipans", "sherbet", "sherbets", "praline", "pralines",
     "truffle", "truffles", "bonbon", "bonbons",
     "licorice", "liquorice",
     # Caramel is included so that "truffle salt caramel" and similar compound
@@ -193,8 +193,8 @@ ERROR_CODE = "ERROR"
 UNCLASSIFIED_CODE = "UNCLASSIFIED"
 
 # Columns pulled from a classified result_df when populating the review queue
-# during bulk upload.  Defined at module level so the tuple is created once.
-_BULK_QUEUE_COLS = ("description", "value", "uk_code", "confidence", "explanation", "risk")
+# during bulk upload.  Defined at module level so the list is created once.
+_BULK_QUEUE_COLS = ["description", "value", "uk_code", "confidence", "explanation", "risk"]
 
 # Maximum number of distinct (desc, material, category, high_value) tuples held in
 # the classification cache.  Origin is excluded from the key because classification
@@ -929,7 +929,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
 
     queueable_df = result_df[~result_df["hs6"].isin({ERROR_CODE, UNCLASSIFIED_CODE})]
     try:
-        for row in queueable_df[list(_BULK_QUEUE_COLS)].to_dict("records"):
+        for row in queueable_df[_BULK_QUEUE_COLS].to_dict("records"):
             _add_to_review_queue({
                 "description": _safe_str(row.get("description", "")),
                 "value": row.get("value", 0.0),
