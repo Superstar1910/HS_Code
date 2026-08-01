@@ -570,7 +570,12 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # is_bag guard above — category="food" is treated as an authoritative product-type
     # signal that suppresses textile classifications, preventing a data-entry error
     # (e.g. category="food" on a "silk scarf" description) from producing HS 6214.
-    if is_scarf and is_silk and not is_food:
+    # is_bag overrides is_scarf: when description keywords name both a bag and a scarf
+    # (e.g. "silk scarf print shopper bag", "silk shawl tote") the product is a bag
+    # and the scarf word is a modifier.  Without this guard the scarf branch fires
+    # first (it precedes is_bag in the elif chain) and misclassifies the item as
+    # HS 621410 (silk scarf, 8% duty) instead of HS 4202 (travel goods/bags).
+    if is_scarf and is_silk and not is_bag and not is_food:
         return {
             "hs6": "621410",
             "uk_code": "6214100090",
@@ -614,7 +619,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             "vat": "20%",
             "explanation": "Classified under travel goods, handbags and similar containers (HS 4202); verify material composition for precise subheading — leather surface attracts 4202.21/4202.31 (16% duty)." + hv_note,
         }
-    elif is_scarf and not is_food:
+    elif is_scarf and not is_bag and not is_food:
         return {
             "hs6": "621490",
             "uk_code": "6214900000",
@@ -895,9 +900,19 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     # Drop any pre-existing result columns to avoid duplicate columns after concat.
     input_df = df.drop(columns=overlapping).reset_index(drop=True)
     try:
-        with st.spinner(f"Classifying {len(input_df)} rows…"):
-            classified = input_df.apply(classify_row, axis=1)
-            result_df = pd.concat([input_df, classified], axis=1)
+        n = len(input_df)
+        _progress = st.progress(0, text=f"Classifying row 1 of {n}…")
+        _rows = []
+        try:
+            for _i, (_, _row) in enumerate(input_df.iterrows()):
+                _rows.append(classify_row(_row))
+                # Update every row for small files, every 1% for large ones.
+                if _i == n - 1 or (n <= 100) or (_i % max(1, n // 100) == 0):
+                    _progress.progress((_i + 1) / n, text=f"Classifying row {_i + 1} of {n}…")
+        finally:
+            _progress.empty()
+        classified = pd.DataFrame(_rows)
+        result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
         st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
         return
