@@ -137,8 +137,14 @@ _FRAGRANCE_NON_PERFUME_RE = re.compile(
     r'|\b(?:with|added|enriched\s+with|infused\s+with)\s+'
     r'(?:(?:natural|synthetic|artificial|floral|fruity|citrus|botanical|herbal)\s+)?fragrances?\b'
 )
-# Pre-compiled pattern to strip truffle words for culinary vs confection disambiguation.
+# Pre-compiled patterns to strip polysemous words for culinary vs confection disambiguation.
 _TRUFFLE_WORD_RE = re.compile(r'\btruffles?\b')
+# "caramel" / "caramels" appear both as chocolate confections and as culinary flavour
+# descriptors (e.g. "caramel truffle oil", "caramel sauce").  Used alongside
+# _TRUFFLE_WORD_RE in the culinary-truffle guard to suppress is_confectionery when
+# the only confectionery signals in a description are "caramel" + "truffle" words and
+# a culinary-context term is also present.
+_CARAMEL_WORD_RE = re.compile(r'\bcaramels?\b')
 # Culinary truffle (Tuber genus fungi) context: species qualifiers ("black truffle",
 # "white truffle") or preparation/ingredient terms ("truffle oil", "truffle pasta").
 # Used to suppress is_confectionery when "truffle"/"truffles" is the sole confectionery
@@ -249,10 +255,15 @@ def _parse_value(raw) -> tuple[float, str]:
             _last_dot = _mparts[-1].find('.')
             _last_base = _mparts[-1][:_last_dot] if _last_dot != -1 else _mparts[-1]
             _last_dec = _mparts[-1][_last_dot + 1:] if _last_dot != -1 else ''
+            # Strip a leading '+' for the digit/length checks: some ERP systems
+            # export positive values with an explicit '+' sign ("+1,250,000").
+            # float() natively accepts a leading '+', so stripping it here only
+            # affects the isdigit() and len() guards, not the final float parse.
+            _mparts0 = _mparts[0].lstrip('+')
             if (
-                _mparts[0].isdigit()
-                and 1 <= len(_mparts[0]) <= 3
-                and int(_mparts[0]) != 0   # "0,000,000" is not a valid UK/US large-number format
+                _mparts0.isdigit()
+                and 1 <= len(_mparts0) <= 3
+                and int(_mparts0) != 0   # "0,000,000" is not a valid UK/US large-number format
                 and all(len(p) == 3 and p.isdigit() for p in _mparts[1:-1])
                 and len(_last_base) == 3
                 and _last_base.isdigit()
@@ -505,9 +516,15 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # _FRAGRANCE_NON_PERFUME_RE guards "fragrance candle", "fragrance diffuser",
     # "fragrance oil" etc. from matching the bare "fragrance" alternative in
     # _PERFUME_RE.  These products are HS 3406/3307/3302, not HS 3303 toilet waters.
+    # The suppressor is checked against both desc AND material_lower: if
+    # _PERFUME_MATERIAL_RE fires solely on the material (e.g. material="fragrance oil
+    # concentrate") without a perfume-type word in desc, omitting the material check
+    # would leave the suppressor silent and misclassify the item as HS 3303.
     is_perfume = not _free_marker and bool(
         _PERFUME_RE.search(desc) or _PERFUME_MATERIAL_RE.search(material_lower)
-    ) and not bool(_FRAGRANCE_NON_PERFUME_RE.search(desc))
+    ) and not bool(
+        _FRAGRANCE_NON_PERFUME_RE.search(desc) or _FRAGRANCE_NON_PERFUME_RE.search(material_lower)
+    )
     # Non-fragrance beauty products (skincare, make-up, etc.) fall here.
     is_cosmetics = category_lower == "beauty" and not is_perfume
     # Only search desc, not material_lower: confectionery keywords such as "caramel",
@@ -524,10 +541,22 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # present, re-check whether any other confectionery keyword remains after
     # stripping the truffle words.  If not, suppress is_confectionery to prevent
     # "truffle oil" or "black truffle pasta" from attracting 20% VAT.
+    # Secondary branch: "caramel" is also polysemous (confection AND culinary flavour
+    # descriptor).  When "caramel" is the leftmost confectionery match (i.e. it appears
+    # before "truffle" in the string) the original truffle check is skipped.  The
+    # secondary branch handles this case: if the only confectionery signals are
+    # "caramel" and "truffle" words, and a culinary-context term is present, suppress
+    # is_confectionery.  Example: "caramel truffle oil" → culinary; contrast with
+    # "truffle salt caramel" where "truffle" is leftmost and "caramel" survives
+    # truffle-stripping, correctly preserving the confection classification.
     if is_confectionery and _TRUFFLE_CULINARY_RE.search(desc):
         _first_conf = _conf_match.group()
         if _first_conf in ('truffle', 'truffles') and not _CONFECTIONERY_RE.search(
             _TRUFFLE_WORD_RE.sub('', desc)
+        ):
+            is_confectionery = False
+        elif _first_conf in ('caramel', 'caramels') and not _CONFECTIONERY_RE.search(
+            _TRUFFLE_WORD_RE.sub('', _CARAMEL_WORD_RE.sub('', desc))
         ):
             is_confectionery = False
     is_fashion = category_lower == "fashion_accessories" or bool(_FASHION_RE.search(desc))
