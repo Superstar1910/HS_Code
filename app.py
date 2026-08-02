@@ -422,7 +422,7 @@ def _safe_str(v) -> str:
     return str(v)
 
 
-def classify_product(description, material, origin, category, value):
+def classify_product(description, material, origin, category, value) -> dict:
     """Normalise inputs then delegate to the cached implementation."""
     v = _normalise_value(value)
     # _safe_str handles None, np.nan, pd.NA, and all other non-string types that
@@ -448,7 +448,7 @@ def classify_product(description, material, origin, category, value):
 
 
 @functools.lru_cache(maxsize=_CACHE_MAX_SIZE)
-def _classify_product_cached(desc, material_lower, category_lower, high_value):
+def _classify_product_cached(desc, material_lower, category_lower, high_value) -> dict:
     # high_value is a bool; using it instead of the raw value means products that
     # share the same description/material/category and the same high-value status
     # hit the same cache entry regardless of exact declared price.  Origin is NOT
@@ -731,7 +731,7 @@ def _format_confidence(conf) -> str:
         return "0%"
 
 
-def classify_row(row):
+def classify_row(row) -> pd.Series:
     """Apply classify_product to a DataFrame row; safe for use with df.apply()."""
     # Parse value before the try/except so val is always defined in the except
     # handler — preserving the correct risk rating even when classify_product
@@ -775,7 +775,7 @@ def classify_row(row):
         })
 
 
-def _add_to_review_queue(result: dict):
+def _add_to_review_queue(result: dict) -> None:
     """Add a classified item to the review queue if not already present.
 
     Deduplicates on (description, high_value_flag, uk_code) so that re-clicking
@@ -930,13 +930,16 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     input_df = df.drop(columns=overlapping).reset_index(drop=True)
     try:
         n = len(input_df)
-        _progress = st.progress(0, text=f"Classifying row 1 of {n}…")
+        _progress = st.progress(0, text=f"Classifying 0 of {n} rows…")
         _rows = []
         try:
             for _i, (_, _row) in enumerate(input_df.iterrows()):
                 _rows.append(classify_row(_row))
-                # Update every row for small files, every 1% for large ones.
-                if _i == n - 1 or (n <= 100) or (_i % max(1, n // 100) == 0):
+                # Update at the last row and every ~1% of progress otherwise.
+                # When n <= 100, n // 100 == 0 so max(1, 0) == 1 and _i % 1 == 0
+                # is always true, which covers the small-file case without a
+                # separate (n <= 100) branch.
+                if _i == n - 1 or (_i % max(1, n // 100) == 0):
                     _progress.progress((_i + 1) / n, text=f"Classifying row {_i + 1} of {n}…")
         finally:
             _progress.empty()
