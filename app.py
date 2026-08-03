@@ -210,6 +210,10 @@ _BULK_QUEUE_COLS = ["description", "value", "uk_code", "confidence", "explanatio
 # 4 MB worst-case.
 _CACHE_MAX_SIZE = 4096
 
+# Hard ceiling on the number of data rows accepted in a single bulk CSV upload.
+# Raising this also requires adjusting the nrows sentinel in _process_bulk_upload.
+_MAX_BULK_ROWS = 5000
+
 
 def _parse_value(raw) -> tuple[float, str]:
     """Convert raw value to (normalised_float, warning_message).
@@ -868,7 +872,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     # the same bad file remains selected.
     st.session_state["_bulk_file_id"] = file_id
     try:
-        # Read one extra row so len(df) > 5000 can detect oversized files.
+        # Read one extra row so len(df) > _MAX_BULK_ROWS can detect oversized files.
         # keep_default_na=False prevents pandas from silently converting product
         # descriptions and other text fields that happen to spell "NA", "NULL",
         # "N/A", "NaN", etc. to NaN, which would cause those rows to be
@@ -877,7 +881,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         # handle identically to NaN.
         df = pd.read_csv(
             io.BytesIO(file_bytes),
-            nrows=5001,
+            nrows=_MAX_BULK_ROWS + 1,
             encoding="utf-8-sig",
             encoding_errors="replace",
             keep_default_na=False,
@@ -908,8 +912,8 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         st.session_state["_bulk_messages"].append(("error", f"Failed to read file: {e}"))
         return
 
-    if len(df) > 5000:
-        st.session_state["_bulk_messages"].append(("error", "CSV exceeds the 5,000-row limit (more than 5,000 rows detected). Split the file and re-upload."))
+    if len(df) > _MAX_BULK_ROWS:
+        st.session_state["_bulk_messages"].append(("error", f"CSV exceeds the {_MAX_BULK_ROWS:,}-row limit (more than {_MAX_BULK_ROWS:,} rows detected). Split the file and re-upload."))
         return
 
     if df.empty:
@@ -930,7 +934,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     input_df = df.drop(columns=overlapping).reset_index(drop=True)
     try:
         n = len(input_df)
-        _progress = st.progress(0, text=f"Classifying 0 of {n} rows…")
+        _progress = st.progress(0.0, text=f"Classifying 0 of {n} rows…")
         _rows = []
         try:
             for _i, (_, _row) in enumerate(input_df.iterrows()):
@@ -949,9 +953,15 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
         return
 
+    # Compute error/unclassified masks once; reused for the summary, the queue
+    # filter, and the Bulk Upload page display to avoid redundant column scans.
+    _hs6 = result_df["hs6"]
+    _is_error = _hs6 == ERROR_CODE
+    _is_unclassified = _hs6 == UNCLASSIFIED_CODE
+
     try:
-        error_count = (result_df["hs6"] == ERROR_CODE).sum()
-        unclassified_count = (result_df["hs6"] == UNCLASSIFIED_CODE).sum()
+        error_count = int(_is_error.sum())
+        unclassified_count = int(_is_unclassified.sum())
         detail_parts = []
         if unclassified_count:
             detail_parts.append(f"{unclassified_count} unclassified")
@@ -969,13 +979,17 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             "df": result_df,
             "summary": summary,
             "filename": filename,
+            "error_count": error_count,
+            "unclassified_count": unclassified_count,
         }
     except Exception as e:
         st.session_state["_bulk_messages"].append(("error", f"Failed to summarise classification results: {e}"))
         return
 
-    queueable_df = result_df[~result_df["hs6"].isin({ERROR_CODE, UNCLASSIFIED_CODE})]
+    queueable_df = result_df[~(_is_error | _is_unclassified)]
+    _queue_changed = False
     try:
+        queue_before = len(st.session_state["review_items"])
         for row in queueable_df[_BULK_QUEUE_COLS].to_dict("records"):
             _add_to_review_queue({
                 "description": _safe_str(row.get("description", "")),
@@ -985,11 +999,14 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
                 "explanation": _safe_str(row.get("explanation", "")),
                 "risk": _safe_str(row.get("risk")) or RISK_AMBER,
             })
+        _queue_changed = len(st.session_state["review_items"]) > queue_before
     except Exception as e:
         st.session_state["_bulk_messages"].append(("warning", f"Review queue could not be fully populated: {e}"))
-    # Invalidate the Review Queue data_editor so any stored edit delta from before
-    # the upload does not replay against the newly-added items.
-    st.session_state["_review_edit_version"] += 1
+    # Invalidate the Review Queue data_editor only when new items were actually
+    # added — an unchanged queue does not need the widget reset, which would
+    # discard in-progress edits without cause.
+    if _queue_changed:
+        st.session_state["_review_edit_version"] += 1
     # _bulk_file_id was already set at the top of this function.
 
 
@@ -1196,11 +1213,10 @@ elif page == "Bulk Upload":
     bulk = st.session_state["bulk_result"]
     if bulk is not None:
         result_df = bulk["df"]
-        error_rows = int((result_df["hs6"] == ERROR_CODE).sum())
-        unclassified_rows = int((result_df["hs6"] == UNCLASSIFIED_CODE).sum())
-        if error_rows + unclassified_rows == len(result_df):
+        problem_rows = bulk["error_count"] + bulk["unclassified_count"]
+        if problem_rows == len(result_df):
             st.error(bulk["summary"])
-        elif error_rows + unclassified_rows > 0:
+        elif problem_rows > 0:
             st.warning(bulk["summary"])
         else:
             st.success(bulk["summary"])
