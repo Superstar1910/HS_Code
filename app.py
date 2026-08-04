@@ -652,7 +652,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "vat": "20%",
             "explanation": "Classified under travel goods, handbags and similar containers (HS 4202); verify material composition for precise subheading — leather surface attracts 4202.21/4202.31 (16% duty)." + hv_note,
         }
-    elif is_scarf and not is_bag and not is_food:
+    elif is_scarf and not is_food:
         return {
             "hs6": "621490",
             "uk_code": "6214900000",
@@ -1140,15 +1140,15 @@ elif page == "Classify":
                 "Could not assign an HS code from the information provided. "
                 "Refine the product description or manually assign a commodity code before shipment."
             )
-        a, b, c = st.columns(3)
-        a.metric("HS6", r["hs6"])
-        b.metric("UK Commodity Code", r["uk_code"])
-        c.metric("Confidence", _format_confidence(r["confidence"]))
+        col_hs6, col_code, col_conf = st.columns(3)
+        col_hs6.metric("HS6", r["hs6"])
+        col_code.metric("UK Commodity Code", r["uk_code"])
+        col_conf.metric("Confidence", _format_confidence(r["confidence"]))
 
-        d, e, f = st.columns(3)
-        d.metric("Risk", r["risk"])
-        e.metric("Duty", r["duty"])
-        f.metric("VAT", r["vat"])
+        col_risk, col_duty, col_vat = st.columns(3)
+        col_risk.metric("Risk", r["risk"])
+        col_duty.metric("Duty", r["duty"])
+        col_vat.metric("VAT", r["vat"])
 
         st.write("**Explanation**")
         st.write(r["explanation"])
