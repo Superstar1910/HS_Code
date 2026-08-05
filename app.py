@@ -5,10 +5,13 @@ import hashlib
 import io
 import math
 import re
+import types
 from collections import Counter
+from typing import Any
+
 import numpy as np
-import streamlit as st
 import pandas as pd
+import streamlit as st
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
@@ -137,8 +140,14 @@ _FRAGRANCE_NON_PERFUME_RE = re.compile(
     r'|\b(?:with|added|enriched\s+with|infused\s+with)\s+'
     r'(?:(?:natural|synthetic|artificial|floral|fruity|citrus|botanical|herbal)\s+)?fragrances?\b'
 )
-# Pre-compiled pattern to strip truffle words for culinary vs confection disambiguation.
+# Pre-compiled patterns to strip polysemous words for culinary vs confection disambiguation.
 _TRUFFLE_WORD_RE = re.compile(r'\btruffles?\b')
+# "caramel" / "caramels" appear both as chocolate confections and as culinary flavour
+# descriptors (e.g. "caramel truffle oil", "caramel sauce").  Used alongside
+# _TRUFFLE_WORD_RE in the culinary-truffle guard to suppress is_confectionery when
+# the only confectionery signals in a description are "caramel" + "truffle" words and
+# a culinary-context term is also present.
+_CARAMEL_WORD_RE = re.compile(r'\bcaramels?\b')
 # Culinary truffle (Tuber genus fungi) context: species qualifiers ("black truffle",
 # "white truffle") or preparation/ingredient terms ("truffle oil", "truffle pasta").
 # Used to suppress is_confectionery when "truffle"/"truffles" is the sole confectionery
@@ -205,7 +214,7 @@ _BULK_QUEUE_COLS = ("description", "value", "uk_code", "confidence", "explanatio
 _CACHE_MAX_SIZE = 4096
 
 
-def _parse_value(raw) -> tuple[float, str]:
+def _parse_value(raw: Any) -> tuple[float, str]:
     """Convert raw value to (normalised_float, warning_message).
 
     The warning is non-empty only when the raw input was absent or invalid
@@ -249,10 +258,15 @@ def _parse_value(raw) -> tuple[float, str]:
             _last_dot = _mparts[-1].find('.')
             _last_base = _mparts[-1][:_last_dot] if _last_dot != -1 else _mparts[-1]
             _last_dec = _mparts[-1][_last_dot + 1:] if _last_dot != -1 else ''
+            # Strip a leading '+' for the digit/length checks: some ERP systems
+            # export positive values with an explicit '+' sign ("+1,250,000").
+            # float() natively accepts a leading '+', so stripping it here only
+            # affects the isdigit() and len() guards, not the final float parse.
+            _mparts0 = _mparts[0].lstrip('+')
             if (
-                _mparts[0].isdigit()
-                and 1 <= len(_mparts[0]) <= 3
-                and int(_mparts[0]) != 0   # "0,000,000" is not a valid UK/US large-number format
+                _mparts0.isdigit()
+                and 1 <= len(_mparts0) <= 3
+                and int(_mparts0) != 0   # "0,000,000" is not a valid UK/US large-number format
                 and all(len(p) == 3 and p.isdigit() for p in _mparts[1:-1])
                 and len(_last_base) == 3
                 and _last_base.isdigit()
@@ -372,7 +386,7 @@ def _parse_value(raw) -> tuple[float, str]:
     return round(v, 2), ""
 
 
-def _is_normalised_float(value) -> bool:
+def _is_normalised_float(value: Any) -> bool:
     """Return True when value is already a finite, non-negative number.
 
     Used as a fast-path guard to skip a redundant _parse_value round-trip when
@@ -389,7 +403,7 @@ def _is_normalised_float(value) -> bool:
     return math.isfinite(v) and v >= 0
 
 
-def _normalise_value(value) -> float:
+def _normalise_value(value: Any) -> float:
     """Convert value to a finite, non-negative float rounded to pence."""
     if _is_normalised_float(value):
         return round(float(value), 2)
@@ -397,7 +411,7 @@ def _normalise_value(value) -> float:
     return v
 
 
-def _safe_str(v) -> str:
+def _safe_str(v: Any) -> str:
     """Convert a value to string, returning empty string for NaN/None."""
     if v is None:
         return ""
@@ -411,7 +425,13 @@ def _safe_str(v) -> str:
     return str(v)
 
 
-def classify_product(description, material, origin, category, value):
+def classify_product(
+    description: Any,
+    material: Any,
+    origin: Any,
+    category: Any,
+    value: Any,
+) -> dict[str, Any]:
     """Normalise inputs then delegate to the cached implementation."""
     v = _normalise_value(value)
     # _safe_str handles None, np.nan, pd.NA, and all other non-string types that
@@ -423,10 +443,11 @@ def classify_product(description, material, origin, category, value):
         if origin_upper
         else " Warning: country of origin not declared — required for customs clearance."
     )
-    # Return a shallow copy so callers cannot mutate the lru_cache entry.
-    # Origin is handled here (outside the cache) so products from different countries
-    # with identical descriptions/materials/categories share the same cache entry.
-    result = dict(_classify_product_cached(
+    # dict() converts the immutable MappingProxyType returned by the cached function
+    # into a mutable copy.  Origin is handled here (outside the cache) so products
+    # from different countries with identical descriptions/materials/categories share
+    # the same cache entry.
+    result: dict[str, Any] = dict(_classify_product_cached(
         _safe_str(description).strip().lower(),
         _safe_str(material).strip().lower(),
         _safe_str(category).strip().lower(),
@@ -437,7 +458,12 @@ def classify_product(description, material, origin, category, value):
 
 
 @functools.lru_cache(maxsize=_CACHE_MAX_SIZE)
-def _classify_product_cached(desc, material_lower, category_lower, high_value):
+def _classify_product_cached(
+    desc: str,
+    material_lower: str,
+    category_lower: str,
+    high_value: bool,
+) -> types.MappingProxyType:
     # high_value is a bool; using it instead of the raw value means products that
     # share the same description/material/category and the same high-value status
     # hit the same cache entry regardless of exact declared price.  Origin is NOT
@@ -524,10 +550,29 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # present, re-check whether any other confectionery keyword remains after
     # stripping the truffle words.  If not, suppress is_confectionery to prevent
     # "truffle oil" or "black truffle pasta" from attracting 20% VAT.
+    # Culinary truffle guard: "truffle"/"truffles" is polysemous — it denotes both
+    # a chocolate confection (standard-rated at 20% VAT) and Tuber genus fungi
+    # (zero-rated food ingredient).  If "truffle"/"truffles" is the FIRST (and
+    # potentially only) confectionery keyword and a culinary-context term is also
+    # present, re-check whether any other confectionery keyword remains after
+    # stripping the truffle words.  If not, suppress is_confectionery to prevent
+    # "truffle oil" or "black truffle pasta" from attracting 20% VAT.
+    # Secondary branch: "caramel" is also polysemous (confection AND culinary flavour
+    # descriptor).  When "caramel" is the leftmost confectionery match (i.e. it appears
+    # before "truffle" in the string) the original truffle check is skipped.  The
+    # secondary branch handles this case: if the only confectionery signals are
+    # "caramel" and "truffle" words, and a culinary-context term is present, suppress
+    # is_confectionery.  Example: "caramel truffle oil" → culinary; contrast with
+    # "truffle salt caramel" where "truffle" is leftmost and "caramel" survives
+    # truffle-stripping, correctly preserving the confection classification.
     if is_confectionery and _TRUFFLE_CULINARY_RE.search(desc):
         _first_conf = _conf_match.group()
         if _first_conf in ('truffle', 'truffles') and not _CONFECTIONERY_RE.search(
             _TRUFFLE_WORD_RE.sub('', desc)
+        ):
+            is_confectionery = False
+        elif _first_conf in ('caramel', 'caramels') and not _CONFECTIONERY_RE.search(
+            _TRUFFLE_WORD_RE.sub('', _CARAMEL_WORD_RE.sub('', desc))
         ):
             is_confectionery = False
     is_fashion = category_lower == "fashion_accessories" or bool(_FASHION_RE.search(desc))
@@ -571,7 +616,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
     # signal that suppresses textile classifications, preventing a data-entry error
     # (e.g. category="food" on a "silk scarf" description) from producing HS 6214.
     if is_scarf and is_silk and not is_food:
-        return {
+        return types.MappingProxyType({
             "hs6": "621410",
             "uk_code": "6214100090",
             "confidence": 0.94,
@@ -579,14 +624,14 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             "duty": "8%",
             "vat": "20%",
             "explanation": "Classified under silk scarves, shawls and similar articles based on material composition and accessory type." + hv_note,
-        }
+        })
     elif is_bag and is_leather:
         # Wallets and similar small leather articles (HS 4202.31) attract the same
         # 16% duty as handbags (HS 4202.21) but have a distinct commodity code;
         # exporting the handbag code for a wallet is a declaration error.
         _is_wallet = bool(_WALLET_RE.search(desc))
         if _is_wallet:
-            return {
+            return types.MappingProxyType({
                 "hs6": "420231",
                 "uk_code": "4202310000",
                 "confidence": 0.82,
@@ -594,8 +639,8 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
                 "duty": "16%",
                 "vat": "20%",
                 "explanation": "Classified under leather wallets and similar small articles (HS 4202.31); verify precise subheading — coin purses: 4202.32." + hv_note,
-            }
-        return {
+            })
+        return types.MappingProxyType({
             "hs6": "420221",
             "uk_code": "4202210000",
             "confidence": 0.82,
@@ -603,9 +648,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             "duty": "16%",
             "vat": "20%",
             "explanation": "Classified under leather travel goods and handbags (HS 4202.21); verify specific subheading — wallets and small articles: 4202.31/4202.32." + hv_note,
-        }
+        })
     elif is_bag:
-        return {
+        return types.MappingProxyType({
             "hs6": "420229",
             "uk_code": "4202290000",
             "confidence": 0.65,
@@ -613,9 +658,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             "duty": "3.7%",
             "vat": "20%",
             "explanation": "Classified under travel goods, handbags and similar containers (HS 4202); verify material composition for precise subheading — leather surface attracts 4202.21/4202.31 (16% duty)." + hv_note,
-        }
+        })
     elif is_scarf and not is_food:
-        return {
+        return types.MappingProxyType({
             "hs6": "621490",
             "uk_code": "6214900000",
             "confidence": 0.72,
@@ -623,9 +668,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             "duty": "12%",
             "vat": "20%",
             "explanation": "Classified under scarves, shawls and similar articles (non-silk); verify fibre composition for precise subheading (wool: 621420, synthetic fibres: 621430, other fibres: 621490)." + hv_note,
-        }
+        })
     elif is_perfume:
-        return {
+        return types.MappingProxyType({
             "hs6": "330300",
             "uk_code": "3303001000",
             "confidence": 0.81,
@@ -633,9 +678,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             "duty": "6.5%",
             "vat": "20%",
             "explanation": "Classified under perfumes and toilet waters; regulated cosmetics handling required." + hv_note,
-        }
+        })
     elif is_cosmetics:
-        return {
+        return types.MappingProxyType({
             "hs6": "330499",
             "uk_code": "3304990000",
             "confidence": 0.68,
@@ -643,7 +688,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             "duty": "6.5%",
             "vat": "20%",
             "explanation": "Classified under beauty and make-up preparations; verify specific subheading for product type (e.g. lip, eye, skin care)." + hv_note,
-        }
+        })
     elif is_food:
         food_vat = "20%" if is_confectionery else "0%"
         # When category="food" triggers without a confectionery keyword the item may
@@ -655,7 +700,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             else " Note: verify VAT rate — most food is zero-rated in the UK, but confectionery"
             " (sweets, chocolates, gummies, marshmallows, etc.) is standard-rated at 20%."
         )
-        return {
+        return types.MappingProxyType({
             "hs6": "210690",
             "uk_code": "2106909900",
             "confidence": 0.65,
@@ -666,9 +711,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
                 "Classified under miscellaneous food preparations; phytosanitary and food safety checks required."
                 + vat_note + hv_note
             ),
-        }
+        })
     elif is_fashion:
-        return {
+        return types.MappingProxyType({
             "hs6": "621790",
             "uk_code": "6217900000",
             "confidence": 0.70,
@@ -676,9 +721,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             "duty": "12%",
             "vat": "20%",
             "explanation": "Classified under other made-up clothing accessories; verify composition for precise subheading." + hv_note,
-        }
+        })
     else:
-        return {
+        return types.MappingProxyType({
             "hs6": UNCLASSIFIED_CODE,
             "uk_code": UNCLASSIFIED_CODE,
             "confidence": 0.0,
@@ -686,10 +731,10 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value):
             "duty": "TBD",
             "vat": "TBD",
             "explanation": "Insufficient structured data; manual review recommended." + hv_note,
-        }
+        })
 
 
-def _format_confidence(conf) -> str:
+def _format_confidence(conf: Any) -> str:
     """Return confidence as a clamped percentage string, e.g. '94%'."""
     try:
         return f"{min(100, max(0, round(float(conf) * 100)))}%"
@@ -697,7 +742,7 @@ def _format_confidence(conf) -> str:
         return "0%"
 
 
-def classify_row(row):
+def classify_row(row: pd.Series) -> pd.Series:
     """Apply classify_product to a DataFrame row; safe for use with df.apply()."""
     # Parse value before the try/except so val is always defined in the except
     # handler — preserving the correct risk rating even when classify_product
@@ -741,7 +786,7 @@ def classify_row(row):
         })
 
 
-def _add_to_review_queue(result: dict):
+def _add_to_review_queue(result: dict[str, Any]) -> None:
     """Add a classified item to the review queue if not already present.
 
     Deduplicates on (description, high_value_flag, uk_code) so that re-clicking
