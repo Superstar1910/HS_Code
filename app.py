@@ -11,7 +11,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
+st.set_page_config(page_title="HS & Shipment Pre-Check", page_icon="🚢", layout="wide")
 
 def _make_word_re(*words: str) -> re.Pattern[str]:
     """Return a compiled whole-word alternation regex for the given keywords."""
@@ -287,10 +287,14 @@ def _parse_value(raw) -> tuple[float, str]:
             # 2-digit group (e.g. "1.250.00") or any non-digit segment is
             # ambiguous — warn rather than produce a wrong result.
             parts = s.split('.')
+            # Strip a leading '+' for the digit/length checks, mirroring the
+            # multi-comma branch treatment.  float() natively accepts '+', so
+            # stripping it here only affects the isdigit() and len() guards.
+            parts0_norm = parts[0].lstrip('+')
             if (
-                parts[0].isdigit()
-                and len(parts[0]) <= 3
-                and int(parts[0]) != 0   # "0.000.000" is not a valid European thousands format
+                parts0_norm.isdigit()
+                and len(parts0_norm) <= 3
+                and int(parts0_norm) != 0   # "0.000.000" is not a valid European thousands format
                 and all(len(p) == 3 and p.isdigit() for p in parts[1:])
             ):
                 s = s.replace('.', '')
@@ -307,9 +311,12 @@ def _parse_value(raw) -> tuple[float, str]:
             integer_part = s[:ci]
             if '.' in integer_part:
                 int_segs = integer_part.split('.')
+                # Strip a leading '+' for the digit/length checks, consistent
+                # with the multi-comma and multi-dot branch treatment.
+                int_segs0_norm = int_segs[0].lstrip('+')
                 if not (
-                    int_segs[0].isdigit()
-                    and 1 <= len(int_segs[0]) <= 3
+                    int_segs0_norm.isdigit()
+                    and 1 <= len(int_segs0_norm) <= 3
                     and all(len(p) == 3 and p.isdigit() for p in int_segs[1:])
                 ):
                     return 0.0, " Warning: declared value format is ambiguous (non-standard European notation); defaulted to £0 for risk assessment."
@@ -346,12 +353,18 @@ def _parse_value(raw) -> tuple[float, str]:
                 di = s.index('.')
                 pre_dot = s[:di]
                 post_dot = s[di + 1:]
+                # Strip a leading '+' for the digit/length checks, consistent
+                # with the multi-comma and multi-dot branch treatment.
+                # Without this, "+1.250" bypasses the ambiguity guard and is
+                # silently parsed as 1.25 instead of being flagged (it should
+                # be ambiguous: could be £1.25 decimal or £1,250 European).
+                pre_dot_norm = pre_dot.lstrip('+')
                 if (
-                    pre_dot.isdigit()
-                    and 1 <= len(pre_dot) <= 3
+                    pre_dot_norm.isdigit()
+                    and 1 <= len(pre_dot_norm) <= 3
                     and len(post_dot) == 3
                     and post_dot.isdigit()
-                    and int(pre_dot) != 0
+                    and int(pre_dot_norm) != 0
                 ):
                     return 0.0, (
                         " Warning: declared value format is ambiguous"
