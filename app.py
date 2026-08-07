@@ -932,22 +932,31 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         st.session_state["_bulk_messages"].append(("warning", f"The following columns from your CSV will be replaced by classification results: {', '.join(overlapping)}"))
     # Drop any pre-existing result columns to avoid duplicate columns after concat.
     input_df = df.drop(columns=overlapping).reset_index(drop=True)
+    n = len(input_df)
+    _progress = st.progress(0.0, text=f"Classifying 0 of {n} rows…")
+    # Chunk size chosen so progress updates occur roughly every 50 rows
+    # regardless of file size — responsive for small files, not overwhelming
+    # for large ones.  df.apply(classify_row, axis=1) is faster than an
+    # explicit iterrows() loop because pandas manages the row-level iteration
+    # internally, avoiding the overhead of constructing a fresh Python Series
+    # object for every single row.
+    _CLASSIFY_CHUNK = 50
+    _chunk_results: list[pd.DataFrame] = []
     try:
-        n = len(input_df)
-        _progress = st.progress(0.0, text=f"Classifying 0 of {n} rows…")
-        _rows = []
-        try:
-            for _i, (_, _row) in enumerate(input_df.iterrows()):
-                _rows.append(classify_row(_row))
-                # Update at the last row and every ~1% of progress otherwise.
-                # When n <= 100, n // 100 == 0 so max(1, 0) == 1 and _i % 1 == 0
-                # is always true, which covers the small-file case without a
-                # separate (n <= 100) branch.
-                if _i == n - 1 or (_i % max(1, n // 100) == 0):
-                    _progress.progress((_i + 1) / n, text=f"Classifying row {_i + 1} of {n}…")
-        finally:
-            _progress.empty()
-        classified = pd.DataFrame(_rows)
+        for _start in range(0, n, _CLASSIFY_CHUNK):
+            _end = min(_start + _CLASSIFY_CHUNK, n)
+            _chunk_results.append(
+                input_df.iloc[_start:_end].apply(classify_row, axis=1)
+            )
+            _progress.progress(_end / n, text=f"Classifying row {_end} of {n}…")
+    except Exception as e:
+        st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
+        return
+    finally:
+        # Always dismiss the progress bar — runs even when except returns.
+        _progress.empty()
+    try:
+        classified = pd.concat(_chunk_results, ignore_index=True)
         result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
         st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
@@ -1261,11 +1270,17 @@ elif page == "Review Queue":
         # Detect per-row status changes: iterate once, track whether anything changed,
         # then rerun only if needed.  A single O(n) pass avoids the previous approach
         # of a separate O(n) list comparison followed by a second O(n) zip iteration.
+        # Guard: num_rows="fixed" prevents insertion/deletion so lengths should always
+        # match; if they diverge (Streamlit edge case), skip the sync this rerun rather
+        # than silently dropping the last rows via zip truncation.
         changed = False
         ts = None
-        for i, (orig_status, new_status) in enumerate(
+        _status_pairs = (
             zip(review_df["Status"], edited_df["Status"])
-        ):
+            if len(edited_df) == len(review_df)
+            else []
+        )
+        for i, (orig_status, new_status) in enumerate(_status_pairs):
             if orig_status != new_status:
                 if ts is None:
                     ts = datetime.now().isoformat(timespec="microseconds")
