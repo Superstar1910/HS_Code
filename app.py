@@ -6,6 +6,7 @@ import io
 import math
 import re
 from collections import Counter
+from types import MappingProxyType
 import numpy as np
 import streamlit as st
 import pandas as pd
@@ -239,6 +240,17 @@ def _parse_value(raw) -> tuple[float, str]:
             return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
         if s.startswith('-'):
             return 0.0, " Warning: declared value was negative; defaulted to £0 for risk assessment."
+        # Strip a leading '+' once so all downstream format branches see a clean
+        # digit string.  Some ERP systems export positive amounts as "+1,250" or
+        # "+1.250,00"; without this strip, pre_dot.isdigit() fails on "+1" and the
+        # single-dot ambiguity guard at the else branch is silently skipped, causing
+        # "+1.250" to be parsed as £1.25 instead of producing the correct ambiguity
+        # warning (£1.25 vs £1,250 — a 1,000× difference that affects the
+        # HIGH_VALUE_THRESHOLD flag).  The multi-comma branch already applied lstrip('+')
+        # locally (line ~266); this makes it consistent across all branches.
+        s = s.lstrip('+')
+        if not s:
+            return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
         # Detect European decimal format: comma followed by 1–2 digits at end,
         # with exactly one comma (e.g. "1.250,00" → "1250.00"). The single-comma
         # guard prevents "1,250,00" (two commas, a common typo) from matching the
@@ -259,11 +271,9 @@ def _parse_value(raw) -> tuple[float, str]:
             _last_dot = _mparts[-1].find('.')
             _last_base = _mparts[-1][:_last_dot] if _last_dot != -1 else _mparts[-1]
             _last_dec = _mparts[-1][_last_dot + 1:] if _last_dot != -1 else ''
-            # Strip a leading '+' for the digit/length checks: some ERP systems
-            # export positive values with an explicit '+' sign ("+1,250,000").
-            # float() natively accepts a leading '+', so stripping it here only
-            # affects the isdigit() and len() guards, not the final float parse.
-            _mparts0 = _mparts[0].lstrip('+')
+            # Leading '+' was already stripped above; _mparts[0] is now a plain digit
+            # string for the isdigit() and len() checks below.
+            _mparts0 = _mparts[0]
             if (
                 _mparts0.isdigit()
                 and 1 <= len(_mparts0) <= 3
@@ -438,7 +448,8 @@ def classify_product(description, material, origin, category, value) -> dict:
         if origin_upper
         else " Warning: country of origin not declared — required for customs clearance."
     )
-    # Return a shallow copy so callers cannot mutate the lru_cache entry.
+    # _classify_product_cached returns a MappingProxyType (read-only view).
+    # dict() here produces a mutable shallow copy for the origin-note append below.
     # Origin is handled here (outside the cache) so products from different countries
     # with identical descriptions/materials/categories share the same cache entry.
     result = dict(_classify_product_cached(
@@ -452,7 +463,7 @@ def classify_product(description, material, origin, category, value) -> dict:
 
 
 @functools.lru_cache(maxsize=_CACHE_MAX_SIZE)
-def _classify_product_cached(desc, material_lower, category_lower, high_value) -> dict:
+def _classify_product_cached(desc, material_lower, category_lower, high_value) -> MappingProxyType:
     # high_value is a bool; using it instead of the raw value means products that
     # share the same description/material/category and the same high-value status
     # hit the same cache entry regardless of exact declared price.  Origin is NOT
@@ -609,7 +620,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # first (it precedes is_bag in the elif chain) and misclassifies the item as
     # HS 621410 (silk scarf, 8% duty) instead of HS 4202 (travel goods/bags).
     if is_scarf and is_silk and not is_bag and not is_food:
-        return {
+        return MappingProxyType({
             "hs6": "621410",
             "uk_code": "6214100090",
             "confidence": 0.94,
@@ -617,14 +628,14 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "8%",
             "vat": "20%",
             "explanation": "Classified under silk scarves, shawls and similar articles based on material composition and accessory type." + hv_note,
-        }
+        })
     elif is_bag and is_leather:
         # Wallets and similar small leather articles (HS 4202.31) attract the same
         # 16% duty as handbags (HS 4202.21) but have a distinct commodity code;
         # exporting the handbag code for a wallet is a declaration error.
         _is_wallet = bool(_WALLET_RE.search(desc))
         if _is_wallet:
-            return {
+            return MappingProxyType({
                 "hs6": "420231",
                 "uk_code": "4202310000",
                 "confidence": 0.82,
@@ -632,8 +643,8 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
                 "duty": "16%",
                 "vat": "20%",
                 "explanation": "Classified under leather wallets and similar small articles (HS 4202.31); verify precise subheading — coin purses: 4202.32." + hv_note,
-            }
-        return {
+            })
+        return MappingProxyType({
             "hs6": "420221",
             "uk_code": "4202210000",
             "confidence": 0.82,
@@ -641,9 +652,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "16%",
             "vat": "20%",
             "explanation": "Classified under leather travel goods and handbags (HS 4202.21); verify specific subheading — wallets and small articles: 4202.31/4202.32." + hv_note,
-        }
+        })
     elif is_bag:
-        return {
+        return MappingProxyType({
             "hs6": "420229",
             "uk_code": "4202290000",
             "confidence": 0.65,
@@ -651,9 +662,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "3.7%",
             "vat": "20%",
             "explanation": "Classified under travel goods, handbags and similar containers (HS 4202); verify material composition for precise subheading — leather surface attracts 4202.21/4202.31 (16% duty)." + hv_note,
-        }
+        })
     elif is_scarf and not is_food:
-        return {
+        return MappingProxyType({
             "hs6": "621490",
             "uk_code": "6214900000",
             "confidence": 0.72,
@@ -661,9 +672,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "12%",
             "vat": "20%",
             "explanation": "Classified under scarves, shawls and similar articles (non-silk); verify fibre composition for precise subheading (wool: 621420, synthetic fibres: 621430, other fibres: 621490)." + hv_note,
-        }
+        })
     elif is_perfume:
-        return {
+        return MappingProxyType({
             "hs6": "330300",
             "uk_code": "3303001000",
             "confidence": 0.81,
@@ -671,9 +682,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "6.5%",
             "vat": "20%",
             "explanation": "Classified under perfumes and toilet waters; regulated cosmetics handling required." + hv_note,
-        }
+        })
     elif is_cosmetics:
-        return {
+        return MappingProxyType({
             "hs6": "330499",
             "uk_code": "3304990000",
             "confidence": 0.68,
@@ -681,7 +692,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "6.5%",
             "vat": "20%",
             "explanation": "Classified under beauty and make-up preparations; verify specific subheading for product type (e.g. lip, eye, skin care)." + hv_note,
-        }
+        })
     elif is_food:
         food_vat = "20%" if is_confectionery else "0%"
         # When category="food" triggers without a confectionery keyword the item may
@@ -693,7 +704,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             else " Note: verify VAT rate — most food is zero-rated in the UK, but confectionery"
             " (sweets, chocolates, gummies, marshmallows, etc.) is standard-rated at 20%."
         )
-        return {
+        return MappingProxyType({
             "hs6": "210690",
             "uk_code": "2106909900",
             "confidence": 0.65,
@@ -704,9 +715,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
                 "Classified under miscellaneous food preparations; phytosanitary and food safety checks required."
                 + vat_note + hv_note
             ),
-        }
+        })
     elif is_fashion:
-        return {
+        return MappingProxyType({
             "hs6": "621790",
             "uk_code": "6217900000",
             "confidence": 0.70,
@@ -714,9 +725,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "12%",
             "vat": "20%",
             "explanation": "Classified under other made-up clothing accessories; verify composition for precise subheading." + hv_note,
-        }
+        })
     else:
-        return {
+        return MappingProxyType({
             "hs6": UNCLASSIFIED_CODE,
             "uk_code": UNCLASSIFIED_CODE,
             "confidence": 0.0,
@@ -724,7 +735,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "TBD",
             "vat": "TBD",
             "explanation": "Insufficient structured data; manual review recommended." + hv_note,
-        }
+        })
 
 
 def _format_confidence(conf) -> str:
