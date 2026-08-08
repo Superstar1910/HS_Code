@@ -265,13 +265,13 @@ def _parse_value(raw) -> tuple[float, str]:
             # affects the isdigit() and len() guards, not the final float parse.
             _mparts0 = _mparts[0].lstrip('+')
             if (
-                _mparts0.isdigit()
+                _mparts0.isdecimal()
                 and 1 <= len(_mparts0) <= 3
                 and int(_mparts0) != 0   # "0,000,000" is not a valid UK/US large-number format
-                and all(len(p) == 3 and p.isdigit() for p in _mparts[1:-1])
+                and all(len(p) == 3 and p.isdecimal() for p in _mparts[1:-1])
                 and len(_last_base) == 3
-                and _last_base.isdigit()
-                and (_last_dec == '' or _last_dec.isdigit())
+                and _last_base.isdecimal()
+                and (_last_dec == '' or _last_dec.isdecimal())
             ):
                 # Strip commas; the elif/else chain below is skipped because
                 # no elif condition can match when comma_count > 1.
@@ -288,10 +288,10 @@ def _parse_value(raw) -> tuple[float, str]:
             # ambiguous — warn rather than produce a wrong result.
             parts = s.split('.')
             if (
-                parts[0].isdigit()
+                parts[0].isdecimal()
                 and len(parts[0]) <= 3
                 and int(parts[0]) != 0   # "0.000.000" is not a valid European thousands format
-                and all(len(p) == 3 and p.isdigit() for p in parts[1:])
+                and all(len(p) == 3 and p.isdecimal() for p in parts[1:])
             ):
                 s = s.replace('.', '')
             else:
@@ -308,9 +308,9 @@ def _parse_value(raw) -> tuple[float, str]:
             if '.' in integer_part:
                 int_segs = integer_part.split('.')
                 if not (
-                    int_segs[0].isdigit()
+                    int_segs[0].isdecimal()
                     and 1 <= len(int_segs[0]) <= 3
-                    and all(len(p) == 3 and p.isdigit() for p in int_segs[1:])
+                    and all(len(p) == 3 and p.isdecimal() for p in int_segs[1:])
                 ):
                     return 0.0, " Warning: declared value format is ambiguous (non-standard European notation); defaulted to £0 for risk assessment."
             s = s.replace('.', '').replace(',', '.')
@@ -347,10 +347,10 @@ def _parse_value(raw) -> tuple[float, str]:
                 pre_dot = s[:di]
                 post_dot = s[di + 1:]
                 if (
-                    pre_dot.isdigit()
+                    pre_dot.isdecimal()
                     and 1 <= len(pre_dot) <= 3
                     and len(post_dot) == 3
-                    and post_dot.isdigit()
+                    and post_dot.isdecimal()
                     and int(pre_dot) != 0
                 ):
                     return 0.0, (
@@ -755,11 +755,14 @@ def classify_row(row) -> pd.Series:
     except Exception as e:
         row_idx = getattr(row, "name", None)
         # hasattr(__index__) covers Python int and numpy integer scalars.
-        # bool is excluded explicitly: bool subclasses int, so True+1=2 and
-        # False+1=1 would produce a misleading "Row 2:"/"Row 1:" prefix.
+        # bool and np.bool_ are excluded explicitly: bool subclasses int, so
+        # True+1=2 and False+1=1 would produce a misleading "Row 2:"/"Row 1:"
+        # prefix.  np.bool_ is NOT a subclass of Python bool (isinstance check
+        # returns False), but it does implement __index__, so it must be
+        # excluded separately to prevent the same misleading arithmetic.
         display_idx = (
             (row_idx + 1)
-            if hasattr(row_idx, "__index__") and not isinstance(row_idx, bool)
+            if hasattr(row_idx, "__index__") and not isinstance(row_idx, (bool, np.bool_))
             else row_idx
         )
         prefix = f"Row {display_idx}: " if display_idx is not None else ""
