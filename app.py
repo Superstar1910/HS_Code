@@ -239,6 +239,12 @@ def _parse_value(raw) -> tuple[float, str]:
             return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
         if s.startswith('-'):
             return 0.0, " Warning: declared value was negative; defaulted to £0 for risk assessment."
+        # Strip a leading '+' before any structural checks: some ERP systems export
+        # positive values with an explicit '+' sign (e.g. "+1,250,000", "+1.250.000",
+        # "+1.250,00").  float() natively accepts a leading '+', so stripping it here
+        # only affects the isdecimal() and length guards in every branch below — the
+        # final parsed numeric value is identical to the unstripped form.
+        s = s.lstrip('+')
         # Detect European decimal format: comma followed by 1–2 digits at end,
         # with exactly one comma (e.g. "1.250,00" → "1250.00"). The single-comma
         # guard prevents "1,250,00" (two commas, a common typo) from matching the
@@ -259,10 +265,9 @@ def _parse_value(raw) -> tuple[float, str]:
             _last_dot = _mparts[-1].find('.')
             _last_base = _mparts[-1][:_last_dot] if _last_dot != -1 else _mparts[-1]
             _last_dec = _mparts[-1][_last_dot + 1:] if _last_dot != -1 else ''
-            # Strip a leading '+' for the digit/length checks: some ERP systems
-            # export positive values with an explicit '+' sign ("+1,250,000").
-            # float() natively accepts a leading '+', so stripping it here only
-            # affects the isdigit() and len() guards, not the final float parse.
+            # The leading '+' was already stripped from s above; lstrip('+') here
+            # is a no-op and is kept only as a belt-and-suspenders guard so that
+            # this branch remains self-contained if the call site ever changes.
             _mparts0 = _mparts[0].lstrip('+')
             if (
                 _mparts0.isdecimal()
@@ -570,14 +575,20 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # — is treated as a contradicting signal and suppresses the keyword override.
     # This prevents "chocolate-coloured sofa" (category: furniture) and
     # "chocolate gift bag" (category: bags) from being misclassified as food.
-    # When category is blank, genuine-material signals (is_leather, is_silk) and
-    # fashion-item keywords (is_fashion) also suppress confectionery food
-    # classification: colour/texture names like "fudge brown", "toffee", and
-    # "chocolate" appear routinely in fashion product descriptions ("chocolate
-    # wallet", "toffee belt") and should not override a clear product-type signal.
+    # When category is blank, genuine-material signals (is_leather, is_silk),
+    # fashion-item keywords (is_fashion), and scarf/shawl keywords (is_scarf)
+    # also suppress confectionery food classification: colour/texture names like
+    # "fudge brown", "toffee", and "chocolate" appear routinely in fashion and
+    # textile product descriptions ("chocolate wallet", "toffee belt", "toffee
+    # scarf") and should not override a clear product-type signal.  _SCARF_RE
+    # is not a subset of _FASHION_RE (scarves are detected separately), so
+    # is_scarf must be listed here explicitly to prevent "toffee scarf" /
+    # "fudge shawl" with blank category from being routed to food (HS 210690,
+    # 0% VAT) instead of scarves (HS 6214, 12% duty).
     # category="food" always wins regardless of other flags.
     is_food = category_lower == "food" or (
-        is_confectionery and not category_lower and not is_leather and not is_silk and not is_fashion
+        is_confectionery and not category_lower
+        and not is_leather and not is_silk and not is_fashion and not is_scarf
     )
     # Bag detection: fashion_accessories and food categories override bag keywords.
     # fashion_accessories: "handbag charm" is an accessory, not a bag.
