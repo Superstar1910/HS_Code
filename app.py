@@ -5,6 +5,7 @@ import hashlib
 import io
 import math
 import re
+import types
 from collections import Counter
 import numpy as np
 import streamlit as st
@@ -55,6 +56,17 @@ _CONFECTIONERY_RE = _make_word_re(
     # without "caramel" the guard would fire and suppress is_confectionery for
     # "truffle salt caramel", routing it to UNCLASSIFIED or wrong 0% VAT).
     "caramel", "caramels",
+    # Additional UK confectionery terms explicitly standard-rated at 20% VAT
+    # under HMRC VAT Notice 701/14 — absent from the original list, causing
+    # these products to go UNCLASSIFIED (0% confidence) instead of HS 210690.
+    "wine gum", "wine gums",
+    "jelly baby", "jelly babies", "jelly bean", "jelly beans",
+    "boiled sweet", "boiled sweets",
+    "humbug", "humbugs",
+    # UK flapjacks (oat/syrup bars) are standard-rated confectionery in a UK
+    # customs context (HMRC Notice 701/14 §4.6); the US meaning (pancake) is not
+    # relevant here.
+    "flapjack", "flapjacks",
 )
 _FASHION_RE = _make_word_re(
     "belt", "belts", "glove", "gloves",
@@ -131,9 +143,22 @@ _PERFUME_RE = re.compile(
 # _PERFUME_RE itself.  The "with/added/enriched with/infused with" prefixes are
 # unambiguous ingredient-list markers that never introduce perfume product names.
 _FRAGRANCE_NON_PERFUME_RE = re.compile(
-    r'\bfragrances?\s+(?:candle|candles|diffuser|diffusers|oil|oils|lamp|lamps|wax|warmer|warmers)\b'
+    # First branch: "fragrance <product-type>" — bare "spray", "mist" added so
+    # "fragrance room spray" and "fragrance body mist" are suppressed correctly.
+    r'\bfragrances?\s+(?:candle|candles|diffuser|diffusers|oil|oils|lamp|lamps|wax|warmer|warmers'
+    r'|spray|sprays|mist|mists)\b'
+    # Second branch: compound product-type terms that are HS 3307 (room/body
+    # deodorising preparations), not HS 3303 perfumes.
+    # • "aromatherapy diffuser" had only the singular form; corrected to diffusers?.
+    # • Added room spray/sprays, air freshener/fresheners, body mist/mists,
+    #   linen spray/sprays, car freshener/fresheners, fabric spray/sprays —
+    #   all are HS 3307, not 3303, and would otherwise be misclassified when
+    #   the description contains the bare word "fragrance".
     r'|\b(?:scented\s+candle|scented\s+candles|reed\s+diffuser|reed\s+diffusers'
-    r'|wax\s+melt|wax\s+melts|oil\s+burner|oil\s+burners|aromatherapy\s+diffuser)\b'
+    r'|wax\s+melt|wax\s+melts|oil\s+burner|oil\s+burners|aromatherapy\s+diffusers?'
+    r'|room\s+sprays?|air\s+fresheners?'
+    r'|body\s+mists?|linen\s+sprays?'
+    r'|car\s+fresheners?|fabric\s+sprays?)\b'
     r'|\b(?:with|added|enriched\s+with|infused\s+with)\s+'
     r'(?:(?:natural|synthetic|artificial|floral|fruity|citrus|botanical|herbal)\s+)?fragrances?\b'
 )
@@ -245,6 +270,11 @@ def _parse_value(raw) -> tuple[float, str]:
         # only affects the isdecimal() and length guards in every branch below — the
         # final parsed numeric value is identical to the unstripped form.
         s = s.lstrip('+')
+        # A value of "+" or "++" becomes an empty string after lstrip; treat it
+        # as missing rather than falling through to float("") → ValueError and
+        # the less-accurate "could not be parsed" warning.
+        if not s:
+            return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
         # Detect European decimal format: comma followed by 1–2 digits at end,
         # with exactly one comma (e.g. "1.250,00" → "1250.00"). The single-comma
         # guard prevents "1,250,00" (two commas, a common typo) from matching the
@@ -457,13 +487,17 @@ def classify_product(description, material, origin, category, value) -> dict:
 
 
 @functools.lru_cache(maxsize=_CACHE_MAX_SIZE)
-def _classify_product_cached(desc, material_lower, category_lower, high_value) -> dict:
+def _classify_product_cached(desc, material_lower, category_lower, high_value) -> types.MappingProxyType:
     # high_value is a bool; using it instead of the raw value means products that
     # share the same description/material/category and the same high-value status
     # hit the same cache entry regardless of exact declared price.  Origin is NOT
     # part of the key — classification logic is identical across origins; only the
     # explanation note differs and that is appended by classify_product after the
     # cache lookup.
+    # The function returns types.MappingProxyType so that the lru_cache entry is
+    # immutable — any attempt to mutate it raises TypeError immediately rather than
+    # silently corrupting future cache hits.  classify_product wraps the result in
+    # dict() to obtain a mutable shallow copy before appending the origin note.
     hv_note = " High declared value flagged for additional customs scrutiny." if high_value else ""
 
     # Pre-compute all keyword flags once to avoid redundant regex evaluation.
@@ -620,7 +654,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # first (it precedes is_bag in the elif chain) and misclassifies the item as
     # HS 621410 (silk scarf, 8% duty) instead of HS 4202 (travel goods/bags).
     if is_scarf and is_silk and not is_bag and not is_food:
-        return {
+        return types.MappingProxyType({
             "hs6": "621410",
             "uk_code": "6214100090",
             "confidence": 0.94,
@@ -628,14 +662,14 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "8%",
             "vat": "20%",
             "explanation": "Classified under silk scarves, shawls and similar articles based on material composition and accessory type." + hv_note,
-        }
+        })
     elif is_bag and is_leather:
         # Wallets and similar small leather articles (HS 4202.31) attract the same
         # 16% duty as handbags (HS 4202.21) but have a distinct commodity code;
         # exporting the handbag code for a wallet is a declaration error.
         _is_wallet = bool(_WALLET_RE.search(desc))
         if _is_wallet:
-            return {
+            return types.MappingProxyType({
                 "hs6": "420231",
                 "uk_code": "4202310000",
                 "confidence": 0.82,
@@ -643,8 +677,8 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
                 "duty": "16%",
                 "vat": "20%",
                 "explanation": "Classified under leather wallets and similar small articles (HS 4202.31); verify precise subheading — coin purses: 4202.32." + hv_note,
-            }
-        return {
+            })
+        return types.MappingProxyType({
             "hs6": "420221",
             "uk_code": "4202210000",
             "confidence": 0.82,
@@ -652,9 +686,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "16%",
             "vat": "20%",
             "explanation": "Classified under leather travel goods and handbags (HS 4202.21); verify specific subheading — wallets and small articles: 4202.31/4202.32." + hv_note,
-        }
+        })
     elif is_bag:
-        return {
+        return types.MappingProxyType({
             "hs6": "420229",
             "uk_code": "4202290000",
             "confidence": 0.65,
@@ -662,9 +696,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "3.7%",
             "vat": "20%",
             "explanation": "Classified under travel goods, handbags and similar containers (HS 4202); verify material composition for precise subheading — leather surface attracts 4202.21/4202.31 (16% duty)." + hv_note,
-        }
+        })
     elif is_scarf and not is_food:
-        return {
+        return types.MappingProxyType({
             "hs6": "621490",
             "uk_code": "6214900000",
             "confidence": 0.72,
@@ -672,9 +706,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "12%",
             "vat": "20%",
             "explanation": "Classified under scarves, shawls and similar articles (non-silk); verify fibre composition for precise subheading (wool: 621420, synthetic fibres: 621430, other fibres: 621490)." + hv_note,
-        }
+        })
     elif is_perfume:
-        return {
+        return types.MappingProxyType({
             "hs6": "330300",
             "uk_code": "3303001000",
             "confidence": 0.81,
@@ -682,9 +716,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "6.5%",
             "vat": "20%",
             "explanation": "Classified under perfumes and toilet waters; regulated cosmetics handling required." + hv_note,
-        }
+        })
     elif is_cosmetics:
-        return {
+        return types.MappingProxyType({
             "hs6": "330499",
             "uk_code": "3304990000",
             "confidence": 0.68,
@@ -692,7 +726,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "6.5%",
             "vat": "20%",
             "explanation": "Classified under beauty and make-up preparations; verify specific subheading for product type (e.g. lip, eye, skin care)." + hv_note,
-        }
+        })
     elif is_food:
         food_vat = "20%" if is_confectionery else "0%"
         # When category="food" triggers without a confectionery keyword the item may
@@ -704,7 +738,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             else " Note: verify VAT rate — most food is zero-rated in the UK, but confectionery"
             " (sweets, chocolates, gummies, marshmallows, etc.) is standard-rated at 20%."
         )
-        return {
+        return types.MappingProxyType({
             "hs6": "210690",
             "uk_code": "2106909900",
             "confidence": 0.65,
@@ -715,9 +749,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
                 "Classified under miscellaneous food preparations; phytosanitary and food safety checks required."
                 + vat_note + hv_note
             ),
-        }
+        })
     elif is_fashion:
-        return {
+        return types.MappingProxyType({
             "hs6": "621790",
             "uk_code": "6217900000",
             "confidence": 0.70,
@@ -725,9 +759,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "12%",
             "vat": "20%",
             "explanation": "Classified under other made-up clothing accessories; verify composition for precise subheading." + hv_note,
-        }
+        })
     else:
-        return {
+        return types.MappingProxyType({
             "hs6": UNCLASSIFIED_CODE,
             "uk_code": UNCLASSIFIED_CODE,
             "confidence": 0.0,
@@ -735,7 +769,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "TBD",
             "vat": "TBD",
             "explanation": "Insufficient structured data; manual review recommended." + hv_note,
-        }
+        })
 
 
 def _format_confidence(conf) -> str:
@@ -817,7 +851,11 @@ def _add_to_review_queue(result: dict) -> None:
         _safe_str(result.get("uk_code", "")),
     )
     if key not in st.session_state["review_keys"]:
+        # New entry: record the list index so we can find this item in O(1) if a
+        # later reclassification of the same product yields a higher confidence.
+        idx = len(st.session_state["review_items"])
         st.session_state["review_keys"].add(key)
+        st.session_state["_review_index"][key] = idx
         st.session_state["review_items"].append({
             "Product": _safe_str(result.get("description", "")),
             "Suggested Code": result.get("uk_code", UNCLASSIFIED_CODE),
@@ -826,6 +864,23 @@ def _add_to_review_queue(result: dict) -> None:
             "Risk": result.get("risk", RISK_AMBER),
             "Status": STATUS_PENDING,
         })
+    else:
+        # Duplicate key: update confidence and explanation if the new classification
+        # is more confident.  Without this, a refined reclassification (e.g. adding
+        # material composition to a previously ambiguous entry) that produces the same
+        # UK code at higher confidence would be silently discarded, leaving the analyst
+        # with stale, low-confidence information.
+        new_conf = result.get("confidence", 0.0)
+        idx = st.session_state.get("_review_index", {}).get(key)
+        if idx is not None and idx < len(st.session_state["review_items"]):
+            existing = st.session_state["review_items"][idx]
+            try:
+                existing_conf = float(existing["Confidence"].rstrip("%")) / 100
+            except (ValueError, AttributeError):
+                existing_conf = 0.0
+            if new_conf > existing_conf:
+                existing["Confidence"] = _format_confidence(new_conf)
+                existing["Explanation"] = _safe_str(result.get("explanation", ""))
 
 
 def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_icon: str) -> None:
@@ -948,20 +1003,23 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     input_df = df.drop(columns=overlapping).reset_index(drop=True)
     try:
         n = len(input_df)
-        _progress = st.progress(0.0, text=f"Classifying 0 of {n} rows…")
-        _rows = []
+        # Process rows in chunks of ~1 % of the file so the progress bar updates
+        # ~100 times regardless of file size.  df.apply(classify_row, axis=1)
+        # per chunk avoids the per-row Series-boxing overhead of iterrows()
+        # (typically 3–10 × faster for mixed-type DataFrames).  input_df has a
+        # sequential 0..n-1 index (from reset_index above) so iloc slicing
+        # preserves the correct row ordering after pd.concat.
+        _chunk_size = max(1, n // 100)
+        _progress = st.progress(0.0, text=f"Classifying {n} rows…")
+        _chunks: list[pd.DataFrame] = []
         try:
-            for _i, (_, _row) in enumerate(input_df.iterrows()):
-                _rows.append(classify_row(_row))
-                # Update at the last row and every ~1% of progress otherwise.
-                # When n <= 100, n // 100 == 0 so max(1, 0) == 1 and _i % 1 == 0
-                # is always true, which covers the small-file case without a
-                # separate (n <= 100) branch.
-                if _i == n - 1 or (_i % max(1, n // 100) == 0):
-                    _progress.progress((_i + 1) / n, text=f"Classifying row {_i + 1} of {n}…")
+            for _start in range(0, n, _chunk_size):
+                _end = min(_start + _chunk_size, n)
+                _chunks.append(input_df.iloc[_start:_end].apply(classify_row, axis=1))
+                _progress.progress(_end / n, text=f"Classifying row {_end} of {n}…")
         finally:
             _progress.empty()
-        classified = pd.DataFrame(_rows)
+        classified = pd.concat(_chunks).reset_index(drop=True) if _chunks else pd.DataFrame()
         result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
         st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
@@ -1027,6 +1085,10 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
 # Initialise session state keys once so all pages can rely on them existing.
 st.session_state.setdefault("review_items", [])
 st.session_state.setdefault("review_keys", set())
+# Maps the same dedup key used in review_keys → list index in review_items.
+# Enables O(1) confidence-upgrade lookups in _add_to_review_queue without
+# scanning the full list.
+st.session_state.setdefault("_review_index", {})
 st.session_state.setdefault("audit_log", [])
 st.session_state.setdefault("bulk_result", None)
 st.session_state.setdefault("_bulk_file_id", None)
@@ -1271,6 +1333,17 @@ elif page == "Review Queue":
             use_container_width=True,
             key=f"review_queue_editor_{st.session_state['_review_edit_version']}",
         )
+
+        # Guard: data_editor must return the same number of rows it received.
+        # If a Streamlit version regression causes silent row truncation, zip()
+        # would silently skip tail rows and status edits would be lost.  Surfacing
+        # this as an explicit error is preferable to silent data loss.
+        if len(edited_df) != len(items):
+            st.error(
+                "Review queue length mismatch — the editor returned a different "
+                "number of rows than were displayed. Please reload the page."
+            )
+            st.stop()
 
         # Detect per-row status changes: iterate once, track whether anything changed,
         # then rerun only if needed.  A single O(n) pass avoids the previous approach
