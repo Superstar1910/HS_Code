@@ -5,6 +5,7 @@ import hashlib
 import io
 import math
 import re
+import types
 from collections import Counter
 import numpy as np
 import streamlit as st
@@ -457,7 +458,7 @@ def classify_product(description, material, origin, category, value) -> dict:
 
 
 @functools.lru_cache(maxsize=_CACHE_MAX_SIZE)
-def _classify_product_cached(desc, material_lower, category_lower, high_value) -> dict:
+def _classify_product_cached(desc, material_lower, category_lower, high_value) -> types.MappingProxyType:
     # high_value is a bool; using it instead of the raw value means products that
     # share the same description/material/category and the same high-value status
     # hit the same cache entry regardless of exact declared price.  Origin is NOT
@@ -620,7 +621,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # first (it precedes is_bag in the elif chain) and misclassifies the item as
     # HS 621410 (silk scarf, 8% duty) instead of HS 4202 (travel goods/bags).
     if is_scarf and is_silk and not is_bag and not is_food:
-        return {
+        return types.MappingProxyType({
             "hs6": "621410",
             "uk_code": "6214100090",
             "confidence": 0.94,
@@ -628,14 +629,14 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "8%",
             "vat": "20%",
             "explanation": "Classified under silk scarves, shawls and similar articles based on material composition and accessory type." + hv_note,
-        }
+        })
     elif is_bag and is_leather:
         # Wallets and similar small leather articles (HS 4202.31) attract the same
         # 16% duty as handbags (HS 4202.21) but have a distinct commodity code;
         # exporting the handbag code for a wallet is a declaration error.
         _is_wallet = bool(_WALLET_RE.search(desc))
         if _is_wallet:
-            return {
+            return types.MappingProxyType({
                 "hs6": "420231",
                 "uk_code": "4202310000",
                 "confidence": 0.82,
@@ -643,8 +644,8 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
                 "duty": "16%",
                 "vat": "20%",
                 "explanation": "Classified under leather wallets and similar small articles (HS 4202.31); verify precise subheading — coin purses: 4202.32." + hv_note,
-            }
-        return {
+            })
+        return types.MappingProxyType({
             "hs6": "420221",
             "uk_code": "4202210000",
             "confidence": 0.82,
@@ -652,9 +653,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "16%",
             "vat": "20%",
             "explanation": "Classified under leather travel goods and handbags (HS 4202.21); verify specific subheading — wallets and small articles: 4202.31/4202.32." + hv_note,
-        }
+        })
     elif is_bag:
-        return {
+        return types.MappingProxyType({
             "hs6": "420229",
             "uk_code": "4202290000",
             "confidence": 0.65,
@@ -662,9 +663,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "3.7%",
             "vat": "20%",
             "explanation": "Classified under travel goods, handbags and similar containers (HS 4202); verify material composition for precise subheading — leather surface attracts 4202.21/4202.31 (16% duty)." + hv_note,
-        }
+        })
     elif is_scarf and not is_food:
-        return {
+        return types.MappingProxyType({
             "hs6": "621490",
             "uk_code": "6214900000",
             "confidence": 0.72,
@@ -672,9 +673,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "12%",
             "vat": "20%",
             "explanation": "Classified under scarves, shawls and similar articles (non-silk); verify fibre composition for precise subheading (wool: 621420, synthetic fibres: 621430, other fibres: 621490)." + hv_note,
-        }
+        })
     elif is_perfume:
-        return {
+        return types.MappingProxyType({
             "hs6": "330300",
             "uk_code": "3303001000",
             "confidence": 0.81,
@@ -682,9 +683,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "6.5%",
             "vat": "20%",
             "explanation": "Classified under perfumes and toilet waters; regulated cosmetics handling required." + hv_note,
-        }
+        })
     elif is_cosmetics:
-        return {
+        return types.MappingProxyType({
             "hs6": "330499",
             "uk_code": "3304990000",
             "confidence": 0.68,
@@ -692,7 +693,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "6.5%",
             "vat": "20%",
             "explanation": "Classified under beauty and make-up preparations; verify specific subheading for product type (e.g. lip, eye, skin care)." + hv_note,
-        }
+        })
     elif is_food:
         food_vat = "20%" if is_confectionery else "0%"
         # When category="food" triggers without a confectionery keyword the item may
@@ -704,7 +705,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             else " Note: verify VAT rate — most food is zero-rated in the UK, but confectionery"
             " (sweets, chocolates, gummies, marshmallows, etc.) is standard-rated at 20%."
         )
-        return {
+        return types.MappingProxyType({
             "hs6": "210690",
             "uk_code": "2106909900",
             "confidence": 0.65,
@@ -715,9 +716,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
                 "Classified under miscellaneous food preparations; phytosanitary and food safety checks required."
                 + vat_note + hv_note
             ),
-        }
+        })
     elif is_fashion:
-        return {
+        return types.MappingProxyType({
             "hs6": "621790",
             "uk_code": "6217900000",
             "confidence": 0.70,
@@ -725,9 +726,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "12%",
             "vat": "20%",
             "explanation": "Classified under other made-up clothing accessories; verify composition for precise subheading." + hv_note,
-        }
+        })
     else:
-        return {
+        return types.MappingProxyType({
             "hs6": UNCLASSIFIED_CODE,
             "uk_code": UNCLASSIFIED_CODE,
             "confidence": 0.0,
@@ -735,7 +736,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "duty": "TBD",
             "vat": "TBD",
             "explanation": "Insufficient structured data; manual review recommended." + hv_note,
-        }
+        })
 
 
 def _format_confidence(conf) -> str:
@@ -954,10 +955,9 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             for _i, (_, _row) in enumerate(input_df.iterrows()):
                 _rows.append(classify_row(_row))
                 # Update at the last row and every ~1% of progress otherwise.
-                # When n <= 100, n // 100 == 0 so max(1, 0) == 1 and _i % 1 == 0
-                # is always true, which covers the small-file case without a
-                # separate (n <= 100) branch.
-                if _i == n - 1 or (_i % max(1, n // 100) == 0):
+                # min stride is 5 so files with 100–499 rows don't fire a
+                # Streamlit round-trip for every single row.
+                if _i == n - 1 or (_i % max(5, n // 100) == 0):
                     _progress.progress((_i + 1) / n, text=f"Classifying row {_i + 1} of {n}…")
         finally:
             _progress.empty()
@@ -1221,8 +1221,10 @@ elif page == "Bulk Upload":
     for _level, _msg in st.session_state["_bulk_messages"]:
         if _level == "error":
             st.error(_msg)
-        else:
+        elif _level == "warning":
             st.warning(_msg)
+        else:
+            st.info(_msg)
 
     bulk = st.session_state["bulk_result"]
     if bulk is not None:
