@@ -15,7 +15,14 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
 
 def _make_word_re(*words: str) -> re.Pattern[str]:
-    """Return a compiled whole-word alternation regex for the given keywords."""
+    """Return a compiled whole-word alternation regex for the given keywords.
+
+    Raises ValueError when called with no keywords: the resulting empty
+    alternation r'\\b(?:)\\b' would silently match the empty string at every
+    word boundary rather than matching nothing, which is almost never intended.
+    """
+    if not words:
+        raise ValueError("_make_word_re() requires at least one keyword")
     return re.compile(r'\b(?:' + '|'.join(re.escape(w) for w in words) + r')\b')
 
 # Common ISO 4217 currency text codes used to build the value-strip pattern.
@@ -674,7 +681,13 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "vat": "20%",
             "explanation": "Classified under scarves, shawls and similar articles (non-silk); verify fibre composition for precise subheading (wool: 621420, synthetic fibres: 621430, other fibres: 621490)." + hv_note,
         })
-    elif is_perfume:
+    elif is_perfume and not is_food:
+        # is_food guard required: category="food" must win even when a perfume
+        # keyword appears in the description (e.g. "natural fragrances food
+        # concentrate").  is_scarf and is_bag already carry explicit not-is_food
+        # guards; is_perfume had no such guard and would fire first (line 677 is
+        # before the is_food branch at line 697), mis-assigning HS 3303 / 6.5%
+        # duty instead of HS 2106 / food rate.
         return types.MappingProxyType({
             "hs6": "330300",
             "uk_code": "3303001000",
@@ -949,19 +962,24 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     input_df = df.drop(columns=overlapping).reset_index(drop=True)
     try:
         n = len(input_df)
+        # chunk_size drives both progress granularity (~100 updates max) and the
+        # size of each df.apply() call.  apply() is substantially faster than
+        # iterrows() for the same workload because it avoids per-row Series
+        # construction overhead; chunking lets us update the progress bar between
+        # chunks without reverting to the slower per-row loop.
+        chunk_size = max(5, n // 100)
         _progress = st.progress(0.0, text=f"Classifying 0 of {n} rows…")
-        _rows = []
+        _chunks: list[pd.DataFrame] = []
         try:
-            for _i, (_, _row) in enumerate(input_df.iterrows()):
-                _rows.append(classify_row(_row))
-                # Update at the last row and every ~1% of progress otherwise.
-                # min stride is 5 so files with 100–499 rows don't fire a
-                # Streamlit round-trip for every single row.
-                if _i == n - 1 or (_i % max(5, n // 100) == 0):
-                    _progress.progress((_i + 1) / n, text=f"Classifying row {_i + 1} of {n}…")
+            for _start in range(0, n, chunk_size):
+                _end = min(_start + chunk_size, n)
+                _chunks.append(
+                    input_df.iloc[_start:_end].apply(classify_row, axis=1)
+                )
+                _progress.progress(_end / n, text=f"Classifying row {_end} of {n}…")
         finally:
             _progress.empty()
-        classified = pd.DataFrame(_rows)
+        classified = pd.concat(_chunks).reset_index(drop=True)
         result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
         st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
@@ -1130,7 +1148,7 @@ elif page == "Classify":
                         **result,
                     }
                     st.session_state["last_result"] = entry
-                    if result.get("hs6") == UNCLASSIFIED_CODE:
+                    if result.get("hs6") in {UNCLASSIFIED_CODE, ERROR_CODE}:
                         audit_event = f'"{entry["description"]}" could not be classified — manual code assignment required'
                     else:
                         _add_to_review_queue(entry)
