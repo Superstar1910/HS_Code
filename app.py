@@ -253,6 +253,11 @@ def _parse_value(raw) -> tuple[float, str]:
         # only affects the isdecimal() and length guards in every branch below — the
         # final parsed numeric value is identical to the unstripped form.
         s = s.lstrip('+')
+        # A bare '+' (with no digits) becomes empty after lstrip; treat it as a
+        # missing value rather than letting it fall through to float('') and
+        # producing the less informative "could not be parsed" message.
+        if not s:
+            return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
         # Detect European decimal format: comma followed by 1–2 digits at end,
         # with exactly one comma (e.g. "1.250,00" → "1250.00"). The single-comma
         # guard prevents "1,250,00" (two commas, a common typo) from matching the
@@ -697,7 +702,11 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "vat": "20%",
             "explanation": "Classified under perfumes and toilet waters; regulated cosmetics handling required." + hv_note,
         })
-    elif is_cosmetics:
+    elif is_cosmetics and not is_food:
+        # is_food is always False when is_cosmetics is True (is_cosmetics requires
+        # category_lower == "beauty", which excludes both the "food" keyword path
+        # and the confectionery-keyword path that uses `not category_lower`).
+        # The explicit guard is kept for defensive correctness against future changes.
         return types.MappingProxyType({
             "hs6": "330499",
             "uk_code": "3304990000",
@@ -1123,6 +1132,9 @@ elif page == "Classify":
         if st.button("Run Classification"):
             if not description.strip():
                 st.warning("Please enter a product description before classifying.")
+                # Clear the previous result so the stale card below the warning
+                # is not mistaken for the outcome of this (invalid) button press.
+                st.session_state["last_result"] = None
             else:
                 desc_clean = description.strip()
                 mat_clean = material.strip()
