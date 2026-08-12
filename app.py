@@ -740,6 +740,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             ),
         })
     elif is_fashion:
+        # is_food is guaranteed False here: the preceding elif is_food branch
+        # catches all food-category and confectionery items, so food cannot
+        # reach this branch.  No explicit not-is_food guard is needed.
         return types.MappingProxyType({
             "hs6": "621790",
             "uk_code": "6217900000",
@@ -784,7 +787,9 @@ def classify_row(row) -> pd.Series:
             val,
         )
         if val_warning:
-            result["explanation"] += val_warning
+            # Build a fresh dict rather than mutating result in-place; classify_product
+            # already returns a shallow copy of the cached entry, but explicit is clearer.
+            result = {**result, "explanation": result["explanation"] + val_warning}
         return pd.Series(result)
     except Exception as e:
         row_idx = getattr(row, "name", None)
@@ -985,10 +990,15 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
                 _chunks.append(
                     input_df.iloc[_start:_end].apply(classify_row, axis=1)
                 )
-                _progress.progress(_end / n, text=f"Classifying row {_end} of {n}…")
+                _progress.progress(_end / n, text=f"Classifying {_end} of {n} rows…")
         finally:
             _progress.empty()
-        classified = pd.concat(_chunks).reset_index(drop=True)
+        # _chunks is guaranteed non-empty here: n > 0 (df.empty check above) and the
+        # loop produces at least one chunk.  The guard is kept for defensive correctness.
+        if not _chunks:
+            classified = pd.DataFrame(columns=sorted(RESULT_COLUMNS))
+        else:
+            classified = pd.concat(_chunks).reset_index(drop=True)
         result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
         st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
