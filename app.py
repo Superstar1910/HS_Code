@@ -7,6 +7,7 @@ import math
 import re
 import types
 from collections import Counter
+import altair as alt
 import numpy as np
 import streamlit as st
 import pandas as pd
@@ -79,6 +80,9 @@ _BAG_RE = _make_word_re(
     "wallet", "wallets",
     "pouch", "pouches",
     "crossbody", "crossbodies",
+    # Hyphenated form is common in supplier descriptions (e.g. "leather cross-body").
+    # Without it, products that omit the word "bag" fall through to UNCLASSIFIED.
+    "cross-body", "cross-bodies",
 )
 _FREE_MARKER_RE = re.compile(
     r'\b(?:fragrance|perfume)[-–— ]free\b'                          # fragrance-free, perfume free, etc.
@@ -172,8 +176,12 @@ _SCARF_RE = re.compile(r'\b(?:scarf|scarfs|scarves|shawl|shawls)\b')
 # Without this guard a "silk shawl collar blazer" would be misclassified as a
 # silk scarf (HS 621410, 8% duty) instead of remaining UNCLASSIFIED for review.
 _SCARF_TECHNICAL_RE = re.compile(
-    r'\bscarfs?\s+(?:joint|joints|weld|welds|cut|cuts|plane|planes|ring|rings)\b'
-    r'|\b(?:joint|weld|cut|plane)\s+scarfs?\b'
+    # _SCARF_RE matches scarf|scarfs|scarves, so the technical guard must
+    # cover all three forms.  The original scarfs? missed "scarves", leaving
+    # descriptions like "scarves joint cutter" to be misclassified as HS 6214
+    # textile scarves (12% duty) instead of being suppressed.
+    r'\b(?:scarf|scarfs|scarves)\s+(?:joint|joints|weld|welds|cut|cuts|plane|planes|ring|rings)\b'
+    r'|\b(?:joint|weld|cut|plane)\s+(?:scarf|scarfs|scarves)\b'
     r'|\bshawl[-\s]+(?:collar|lapel|neckline|neck)\b'
 )
 # Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
@@ -1108,7 +1116,36 @@ if page == "Dashboard":
         st.subheader("Session Risk Distribution (Demo)")
         st.info("No classifications yet this session. The chart below shows illustrative demo data.")
         risk_df = pd.DataFrame({"Risk": [RISK_GREEN, RISK_AMBER, RISK_RED], "Count": [9710, 2140, 600]})
-    st.bar_chart(risk_df.set_index("Risk"))
+    # Altair gives each bar the semantically correct risk colour instead of the
+    # default Streamlit palette, which renders all bars identically and gives
+    # no visual risk signal.  altair is a bundled Streamlit dependency.
+    _risk_chart = (
+        alt.Chart(risk_df)
+        .mark_bar()
+        .encode(
+            x=alt.X(
+                "Risk:N",
+                sort=[RISK_GREEN, RISK_AMBER, RISK_RED],
+                title="Risk Level",
+                axis=alt.Axis(labelAngle=0),
+            ),
+            y=alt.Y("Count:Q", title="Number of Items"),
+            color=alt.Color(
+                "Risk:N",
+                scale=alt.Scale(
+                    domain=[RISK_GREEN, RISK_AMBER, RISK_RED],
+                    range=["#27ae60", "#f39c12", "#e74c3c"],
+                ),
+                legend=None,
+            ),
+            tooltip=[
+                alt.Tooltip("Risk:N", title="Risk"),
+                alt.Tooltip("Count:Q", title="Items", format=","),
+            ],
+        )
+        .properties(height=320)
+    )
+    st.altair_chart(_risk_chart, use_container_width=True)
 
 elif page == "Classify":
     st.title("Classify Product")
