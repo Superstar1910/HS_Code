@@ -993,10 +993,13 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
                 _chunks.append(
                     input_df.iloc[_start:_end].apply(classify_row, axis=1)
                 )
-                _progress.progress(_end / n, text=f"Classifying row {_end} of {n}…")
+                _progress.progress(_end / n, text=f"Classified {_end} of {n} rows…")
         finally:
             _progress.empty()
-        classified = pd.concat(_chunks).reset_index(drop=True)
+        # _chunks preserves the original 0‥n-1 index from input_df (each slice
+        # retains its iloc range); concat restores the contiguous index so the
+        # subsequent axis=1 concat with input_df aligns correctly on position.
+        classified = pd.concat(_chunks)
         result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
         st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
