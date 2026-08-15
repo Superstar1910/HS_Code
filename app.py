@@ -985,7 +985,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         # construction overhead; chunking lets us update the progress bar between
         # chunks without reverting to the slower per-row loop.
         chunk_size = max(5, n // 100)
-        _progress = st.progress(0.0, text=f"Classifying 0 of {n} rows…")
+        _progress = st.progress(0.0, text=f"Classified 0 of {n} rows…")
         _chunks: list[pd.DataFrame] = []
         try:
             for _start in range(0, n, chunk_size):
@@ -1121,7 +1121,8 @@ if page == "Dashboard":
         risk_df = pd.DataFrame({"Risk": [RISK_GREEN, RISK_AMBER, RISK_RED], "Count": [9710, 2140, 600]})
     # Altair gives each bar the semantically correct risk colour instead of the
     # default Streamlit palette, which renders all bars identically and gives
-    # no visual risk signal.  altair is a bundled Streamlit dependency.
+    # no visual risk signal.  altair is listed as an explicit dependency in
+    # requirements.txt (Streamlit made it optional from v1.31 onward).
     _risk_chart = (
         alt.Chart(risk_df)
         .mark_bar()
@@ -1256,6 +1257,25 @@ elif page == "Classify":
 
 elif page == "Bulk Upload":
     st.title("Bulk Upload")
+    with st.expander("CSV format guide", expanded=False):
+        st.markdown(
+            "**Required columns** (header names are case-insensitive):\n\n"
+            "| Column | Description | Example |\n"
+            "|---|---|---|\n"
+            "| `description` | Plain-text product name | `Luxury silk scarf` |\n"
+            "| `material` | Fibre / material composition | `100% silk` |\n"
+            "| `origin` | ISO 3166-1 alpha-2 country code | `IT` |\n"
+            "| `category` | Product category — see valid values below | `bags` |\n"
+            "| `value` | Declared customs value in GBP | `250.00` |\n\n"
+            "**Valid `category` values:**\n\n"
+            "- `fashion_accessories` — belts, gloves, hats, brooches, headbands\n"
+            "- `bags` — handbags, totes, backpacks, wallets, purses\n"
+            "- `beauty` — skincare, make-up, cosmetics (use `other` for perfumes — "
+            "the system detects them from the description)\n"
+            "- `food` — all edible products, including confectionery\n"
+            "- `other` — anything else; classification relies solely on description keywords\n\n"
+            "> **Tip:** unknown or misspelled category values are treated as `other`."
+        )
     uploaded = st.file_uploader(
         "Upload CSV with columns: description, material, origin, category, value",
         type=["csv"],
