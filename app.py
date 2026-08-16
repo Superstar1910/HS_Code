@@ -854,7 +854,7 @@ def _add_to_review_queue(result: dict) -> None:
             "Suggested Code": result.get("uk_code", UNCLASSIFIED_CODE),
             "Confidence": _format_confidence(result.get("confidence", 0.0)),
             "Explanation": _safe_str(result.get("explanation", "")),
-            "Risk": result.get("risk", RISK_AMBER),
+            "Risk": result.get("risk") or RISK_AMBER,
             "Status": STATUS_PENDING,
         })
 
@@ -867,7 +867,7 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
         if item["Status"] == STATUS_PENDING:
             # Never bulk-action items with no assigned code; they require manual
             # code entry before either approval or override.
-            if item.get("Suggested Code") in {UNCLASSIFIED_CODE, ERROR_CODE}:
+            if item.get("Suggested Code", UNCLASSIFIED_CODE) in {UNCLASSIFIED_CODE, ERROR_CODE}:
                 skipped_unclassified += 1
                 continue
             item["Status"] = new_status
