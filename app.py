@@ -997,9 +997,10 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         finally:
             _progress.empty()
         # _chunks preserves the original 0‥n-1 index from input_df (each slice
-        # retains its iloc range); concat restores the contiguous index so the
-        # subsequent axis=1 concat with input_df aligns correctly on position.
-        classified = pd.concat(_chunks)
+        # retains its iloc range); ignore_index=True resets the index explicitly
+        # so the subsequent axis=1 concat with input_df always aligns correctly
+        # on position — regardless of how input_df's index was constructed.
+        classified = pd.concat(_chunks, ignore_index=True)
         result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
         st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
@@ -1125,7 +1126,7 @@ if page == "Dashboard":
     # requirements.txt (Streamlit made it optional from v1.31 onward).
     _risk_chart = (
         alt.Chart(risk_df)
-        .mark_bar()
+        .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
         .encode(
             x=alt.X(
                 "Risk:N",
@@ -1389,7 +1390,7 @@ elif page == "Review Queue":
             st.rerun()
 
         st.write("**Bulk review actions**")
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
 
         if col1.button("Approve All"):
             _apply_bulk_review(
@@ -1406,6 +1407,28 @@ elif page == "Review Queue":
                 "{count} pending item(s) flagged for analyst override.",
                 "⚠️",
             )
+
+        if col3.button("Clear Queue", type="secondary", help="Remove all items from the review queue and reset the deduplication index."):
+            ts = datetime.now().isoformat(timespec="microseconds")
+            cleared = len(st.session_state["review_items"])
+            st.session_state["review_items"] = []
+            st.session_state["review_keys"] = set()
+            st.session_state["_review_edit_version"] += 1
+            st.session_state["audit_log"].append({
+                "Timestamp": ts,
+                "Event": f"Review Queue: {cleared} item(s) cleared by user.",
+            })
+            st.toast(f"Review queue cleared ({cleared} item(s) removed).", icon="🗑️")
+            st.rerun()
+
+        st.write("**Export**")
+        st.download_button(
+            "Download Review Queue CSV",
+            data=review_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name="review_queue.csv",
+            mime="text/csv",
+            help="Download the current review queue as a CSV file.",
+        )
     else:
         st.info("No items in the review queue. Classify a product first or use Bulk Upload.")
 
