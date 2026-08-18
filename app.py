@@ -126,7 +126,7 @@ _GENUINE_SILK_RE = re.compile(r'\b(?:genuine|real|authentic)[-\s]+silks?\b')
 # route to HS 4202.31 (leather outer surface, small articles such as wallets) rather
 # than 4202.21 (handbags), correcting a ~12 pp duty-rate error.
 _WALLET_RE = re.compile(r'\bwallets?\b')
-_EURO_DECIMAL_RE = re.compile(r',\d{1,2}$')
+_EURO_DECIMAL_RE = re.compile(r',\d{1,2}\Z')
 _PERFUME_RE = re.compile(
     r'\b(?:perfumes?|fragrances?|colognes?|aftershaves?'
     r'|eau[ -]de[ -](?:parfum|toilette|cologne))\b'
@@ -971,6 +971,22 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         st.session_state["_bulk_messages"].append(("error", f"Missing required columns: {', '.join(sorted(missing))}"))
         return
 
+    # Warn if the category column contains values outside the supported set.
+    # Unknown values behave identically to "other" — classification falls back to
+    # description keywords only — but alerting the user catches common data-entry
+    # errors (e.g. "bag" instead of "bags", "fashion" instead of "fashion_accessories").
+    _VALID_CATEGORIES = {"fashion_accessories", "bags", "beauty", "food", "other", ""}
+    _cat_values = df["category"].astype(str).str.strip().str.lower()
+    _unknown_cats = sorted(set(_cat_values.unique()) - _VALID_CATEGORIES)
+    if _unknown_cats:
+        _unknown_sample = ", ".join(repr(c) for c in _unknown_cats[:5])
+        _more = f" … and {len(_unknown_cats) - 5} more" if len(_unknown_cats) > 5 else ""
+        st.session_state["_bulk_messages"].append(("warning", (
+            f"Unrecognised category value(s) found: {_unknown_sample}{_more}. "
+            "These rows will be classified using description keywords only (same as 'other'). "
+            "Valid values: fashion_accessories, bags, beauty, food, other."
+        )))
+
     # Warn if pre-existing result columns will be overwritten.
     overlapping = sorted(col for col in RESULT_COLUMNS if col in df.columns)
     if overlapping:
@@ -996,10 +1012,10 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
                 _progress.progress(_end / n, text=f"Classified {_end} of {n} rows…")
         finally:
             _progress.empty()
-        # _chunks preserves the original 0‥n-1 index from input_df (each slice
-        # retains its iloc range); concat restores the contiguous index so the
-        # subsequent axis=1 concat with input_df aligns correctly on position.
-        classified = pd.concat(_chunks)
+        # ignore_index=True resets the combined index to 0‥n-1, making the
+        # subsequent axis=1 concat with input_df (also 0‥n-1 from reset_index)
+        # robust regardless of how each chunk's iloc range was labelled.
+        classified = pd.concat(_chunks, ignore_index=True)
         result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
         st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
