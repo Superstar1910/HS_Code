@@ -230,6 +230,13 @@ _CACHE_MAX_SIZE = 4096
 # Raising this also requires adjusting the nrows sentinel in _process_bulk_upload.
 _MAX_BULK_ROWS = 5000
 
+# Valid category values accepted by the classifier.  Empty string is included so
+# that rows with a blank category field are treated as "other" (keyword-only
+# classification) rather than triggering a spurious unknown-category warning.
+# Defined at module level as a frozenset so it is created once at import time and
+# is not reallocated on every _process_bulk_upload call.
+_VALID_CATEGORIES = frozenset({"fashion_accessories", "bags", "beauty", "food", "other", ""})
+
 
 def _parse_value(raw) -> tuple[float, str]:
     """Convert raw value to (normalised_float, warning_message).
@@ -975,7 +982,10 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     # Unknown values behave identically to "other" — classification falls back to
     # description keywords only — but alerting the user catches common data-entry
     # errors (e.g. "bag" instead of "bags", "fashion" instead of "fashion_accessories").
-    _VALID_CATEGORIES = {"fashion_accessories", "bags", "beauty", "food", "other", ""}
+    # _VALID_CATEGORIES is a module-level frozenset; do not re-define it locally.
+    # .astype(str) guards against edge cases where pandas infers the column as a
+    # numeric dtype (all-digit category values, e.g. "1", "2") even with
+    # keep_default_na=False; for typical string-valued columns it is a no-op.
     _cat_values = df["category"].astype(str).str.strip().str.lower()
     _unknown_cats = sorted(set(_cat_values.unique()) - _VALID_CATEGORIES)
     if _unknown_cats:
@@ -1035,8 +1045,9 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             detail_parts.append(f"{unclassified_count} unclassified")
         if error_count:
             detail_parts.append(f"{error_count} error{'s' if error_count != 1 else ''}")
-        row_word = "row" if len(result_df) == 1 else "rows"
-        summary = f"Processed {len(result_df)} {row_word}"
+        nrows = len(result_df)
+        row_word = "row" if nrows == 1 else "rows"
+        summary = f"Processed {nrows} {row_word}"
         if detail_parts:
             summary += f" ({', '.join(detail_parts)})"
         st.session_state["audit_log"].append({
@@ -1286,8 +1297,8 @@ elif page == "Bulk Upload":
             "**Valid `category` values:**\n\n"
             "- `fashion_accessories` — belts, gloves, hats, brooches, headbands\n"
             "- `bags` — handbags, totes, backpacks, wallets, purses\n"
-            "- `beauty` — skincare, make-up, cosmetics (use `other` for perfumes — "
-            "the system detects them from the description)\n"
+            "- `beauty` — skincare, make-up, cosmetics; perfumes/colognes are "
+            "auto-detected from the description so `beauty` is fine for them too\n"
             "- `food` — all edible products, including confectionery\n"
             "- `other` — anything else; classification relies solely on description keywords\n\n"
             "> **Tip:** unknown or misspelled category values are treated as `other`."
