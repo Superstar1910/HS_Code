@@ -340,6 +340,7 @@ def _parse_value(raw) -> tuple[float, str]:
                 if not (
                     int_segs[0].isdecimal()
                     and 1 <= len(int_segs[0]) <= 3
+                    and int(int_segs[0]) != 0   # "0.250,00" — leading-zero thousands group is not standard ERP format
                     and all(len(p) == 3 and p.isdecimal() for p in int_segs[1:])
                 ):
                     return 0.0, " Warning: declared value format is ambiguous (non-standard European notation); defaulted to £0 for risk assessment."
@@ -584,14 +585,27 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # "truffle salt caramel" where "truffle" is leftmost and "caramel" survives
     # truffle-stripping, correctly preserving the confection classification.
     if is_confectionery and _TRUFFLE_CULINARY_RE.search(desc):
-        _first_conf = _conf_match.group()
-        if _first_conf in ('truffle', 'truffles') and not _CONFECTIONERY_RE.search(
-            _TRUFFLE_WORD_RE.sub('', desc)
-        ):
-            is_confectionery = False
-        elif _first_conf in ('caramel', 'caramels') and not _CONFECTIONERY_RE.search(
-            _TRUFFLE_WORD_RE.sub('', _CARAMEL_WORD_RE.sub('', desc))
-        ):
+        # Generalised culinary-truffle guard: strip the first-matched confectionery
+        # keyword (which may be a polysemous flavour descriptor such as "truffle",
+        # "caramel", or "nougat" in "nougat-style truffle oil") together with all
+        # truffle words, then re-run the confectionery check on the remainder.
+        # If no independent confectionery signal survives, the culinary context wins
+        # and is_confectionery is suppressed.
+        #
+        # The original two-branch approach ("truffle" / "caramel" only) was correct
+        # for those two keywords but failed silently when a different confectionery
+        # word appeared before "truffle oil" in the description — e.g. "nougat-style
+        # truffle oil" — leaving is_confectionery True despite the clear culinary
+        # context.  The generalised approach handles any leading confectionery
+        # descriptor uniformly:
+        #   • "truffle salt caramel" → strip "truffle", "caramel" remains → True ✓
+        #   • "caramel truffle oil"  → strip "caramel" + truffle → nothing → False ✓
+        #   • "nougat-style truffle oil" → strip "nougat" + truffle → nothing → False ✓
+        #   • "gummy truffle oil"    → strip "gummy" + truffle → nothing → False ✓
+        _first_conf_word = _conf_match.group()
+        _first_conf_re = re.compile(r'\b' + re.escape(_first_conf_word) + r's?\b')
+        _stripped = _TRUFFLE_WORD_RE.sub('', _first_conf_re.sub('', desc))
+        if not _CONFECTIONERY_RE.search(_stripped):
             is_confectionery = False
     is_fashion = category_lower == "fashion_accessories" or bool(_FASHION_RE.search(desc))
     # Confectionery keywords drive food classification only when the category is
@@ -751,7 +765,11 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
                 + vat_note + hv_note
             ),
         })
-    elif is_fashion:
+    elif is_fashion and not is_food:
+        # Explicit is_food guard mirrors the pattern used on every other suppressed
+        # branch (is_scarf, is_perfume, is_cosmetics).  The guard is functionally
+        # redundant while elif is_food: sits immediately above in the chain, but
+        # protects against future reordering of these branches.
         return types.MappingProxyType({
             "hs6": "621790",
             "uk_code": "6217900000",
@@ -852,7 +870,9 @@ def _add_to_review_queue(result: dict) -> None:
         _safe_str(result.get("uk_code", "")),
     )
     if key not in st.session_state["review_keys"]:
-        st.session_state["review_keys"].add(key)
+        # Append to review_items BEFORE adding the key so that a failure between
+        # the two steps leaves a visible duplicate rather than a permanently blocked
+        # dedup key that would silently prevent the item from ever being re-added.
         st.session_state["review_items"].append({
             "Product": _safe_str(result.get("description", "")),
             "Suggested Code": result.get("uk_code", UNCLASSIFIED_CODE),
@@ -861,6 +881,7 @@ def _add_to_review_queue(result: dict) -> None:
             "Risk": result.get("risk", RISK_AMBER),
             "Status": STATUS_PENDING,
         })
+        st.session_state["review_keys"].add(key)
 
 
 def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_icon: str) -> None:
@@ -1007,7 +1028,11 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         # iterrows() for the same workload because it avoids per-row Series
         # construction overhead; chunking lets us update the progress bar between
         # chunks without reverting to the slower per-row loop.
-        chunk_size = max(5, n // 100)
+        # Lower bound: 5 rows (good granularity for small uploads).
+        # Upper bound: 500 rows — caps the number of separate apply() calls at
+        # ~10 for a 5000-row CSV, reducing per-call dispatch overhead while still
+        # providing ~10 progress-bar updates rather than a single frozen render.
+        chunk_size = min(500, max(5, n // 100))
         _progress = st.progress(0.0, text=f"Classified 0 of {n} rows…")
         _chunks: list[pd.DataFrame] = []
         try:
@@ -1051,8 +1076,14 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             "Timestamp": datetime.now().isoformat(timespec="microseconds"),
             "Event": f"Bulk upload: {summary} from '{filename}'",
         })
+        # Pre-serialise the CSV once at classification time so the download button
+        # can reuse the cached bytes on every subsequent page render instead of
+        # re-running result_df.to_csv() (an O(n) operation) on each Streamlit
+        # rerun triggered by sidebar navigation or widget interaction.
+        _csv_bytes = result_df.to_csv(index=False).encode("utf-8-sig")
         st.session_state["bulk_result"] = {
             "df": result_df,
+            "csv_bytes": _csv_bytes,
             "summary": summary,
             "filename": filename,
             "error_count": error_count,
@@ -1353,7 +1384,7 @@ elif page == "Bulk Upload":
         st.dataframe(result_df, use_container_width=True)
         st.download_button(
             "Download Results CSV",
-            data=result_df.to_csv(index=False).encode("utf-8-sig"),
+            data=bulk["csv_bytes"],
             file_name="hs_classification_results.csv",
             mime="text/csv",
         )
