@@ -13,7 +13,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
+st.set_page_config(page_title="HS & Shipment Pre-Check", page_icon="📦", layout="wide")
 
 def _make_word_re(*words: str) -> re.Pattern[str]:
     """Return a compiled whole-word alternation regex for the given keywords.
@@ -280,7 +280,6 @@ def _parse_value(raw) -> tuple[float, str]:
         # commas as UK/US thousands separators (e.g. "1,250.00" → "1250.00").
         comma_count = s.count(',')
         dot_count = s.count('.')
-        euro_tail = _EURO_DECIMAL_RE.search(s)
         if comma_count > 1:
             # Multiple commas are valid as UK/US thousands separators only when
             # every inter-comma group is exactly 3 digits and the leading group
@@ -293,10 +292,7 @@ def _parse_value(raw) -> tuple[float, str]:
             _last_dot = _mparts[-1].find('.')
             _last_base = _mparts[-1][:_last_dot] if _last_dot != -1 else _mparts[-1]
             _last_dec = _mparts[-1][_last_dot + 1:] if _last_dot != -1 else ''
-            # The leading '+' was already stripped from s above; lstrip('+') here
-            # is a no-op and is kept only as a belt-and-suspenders guard so that
-            # this branch remains self-contained if the call site ever changes.
-            _mparts0 = _mparts[0].lstrip('+')
+            _mparts0 = _mparts[0]  # leading '+' already stripped from s above
             if (
                 _mparts0.isdecimal()
                 and 1 <= len(_mparts0) <= 3
@@ -329,10 +325,11 @@ def _parse_value(raw) -> tuple[float, str]:
                 s = s.replace('.', '')
             else:
                 return 0.0, " Warning: declared value format is ambiguous (mixed dot groups); defaulted to £0 for risk assessment."
-        elif euro_tail and comma_count == 1:
-            # Genuine European decimal format: integer part may contain dots only
-            # as thousands separators, where each dot-separated group is exactly
-            # 3 digits (e.g. "1.250,00" → 1250.00, "1.250.000,99" → 1250000.99).
+        elif comma_count == 1 and _EURO_DECIMAL_RE.search(s):
+            # Genuine European decimal format: 1–2 digit decimal part after the
+            # final comma (e.g. "1.250,00" → 1250.00, "1.250.000,99" → 1250000.99).
+            # The integer part may contain dots only as thousands separators, where
+            # each dot-separated group is exactly 3 digits.
             # Reject patterns like "1.2,34" where a dot-before-comma integer part
             # has non-3-digit groups — these are ambiguous and bypass the dot-
             # before-comma guard in the else branch.
@@ -349,15 +346,15 @@ def _parse_value(raw) -> tuple[float, str]:
             s = s.replace('.', '').replace(',', '.')
         else:
             # UK/US path: commas are thousands separators.  Warn on two non-standard
-            # patterns: (a) dot-before-comma without a recognised Euro decimal tail
-            # (e.g. "1.250,000" — euro_tail only catches 1-2 digit tails, so a
-            # 3-digit tail like ",000" falls through here); (b) comma-before-dot with
-            # a non-3-digit inter-separator group (e.g. "1,50.00").
+            # patterns: (a) dot-before-comma not caught by the Euro decimal branch
+            # (e.g. "1.250,000" — the Euro branch only fires on 1–2 digit tails, so
+            # a 3-digit tail like ",000" falls through here); (b) comma-before-dot
+            # with a non-3-digit inter-separator group (e.g. "1,50.00").
             if comma_count == 1 and dot_count == 1:
                 ci = s.index(',')
                 di = s.index('.')
                 if di < ci:
-                    # Dot precedes comma without a matching euro_tail — ambiguous.
+                    # Dot precedes comma without a matching Euro decimal suffix — ambiguous.
                     return 0.0, " Warning: declared value format is ambiguous (dot before comma without standard decimal suffix); defaulted to £0 for risk assessment."
                 if len(s[ci + 1:di]) != 3:
                     return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
@@ -1160,7 +1157,7 @@ if page == "Dashboard":
                 title="Risk Level",
                 axis=alt.Axis(labelAngle=0),
             ),
-            y=alt.Y("Count:Q", title="Number of Items"),
+            y=alt.Y("Count:Q", title="Number of Items", axis=alt.Axis(format=",")),
             color=alt.Color(
                 "Risk:N",
                 scale=alt.Scale(
