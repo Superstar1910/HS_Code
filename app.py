@@ -1299,9 +1299,20 @@ elif page == "Bulk Upload":
             "- `bags` — handbags, totes, backpacks, wallets, purses\n"
             "- `beauty` — skincare, make-up, cosmetics; perfumes/colognes are "
             "auto-detected from the description so `beauty` is fine for them too\n"
-            "- `food` — all edible products, including confectionery\n"
-            "- `other` — anything else; classification relies solely on description keywords\n\n"
-            "> **Tip:** unknown or misspelled category values are treated as `other`."
+            "- `food` — all edible products including confectionery; **required** for "
+            "food items — do not use `other` for edible products\n"
+            "- `other` — anything else; classification relies solely on description "
+            "keywords and **will return UNCLASSIFIED for food or confectionery items** "
+            "(e.g. 'chocolate cake' or 'gummy bears' with category `other` will not be "
+            "classified as food — use `food` instead)\n\n"
+            "> **Tip:** unknown or misspelled category values are treated as `other`.\n\n"
+            "**`value` format guide:**\n\n"
+            "Declare the customs value in GBP. Common formats are accepted: `250`, "
+            "`1250.00`, `£1,250`, `GBP 1250`, `1250 USD`. "
+            "Ambiguous formats are rejected and default to £0 — "
+            "in particular, a single dot followed by exactly three digits (`1.250`) "
+            "cannot be distinguished from European thousands notation (£1,250) vs "
+            "a decimal (£1.25) and will trigger a warning; use `1250` or `1250.00` instead."
         )
     uploaded = st.file_uploader(
         "Upload CSV with columns: description, material, origin, category, value",
