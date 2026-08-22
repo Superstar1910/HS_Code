@@ -146,7 +146,7 @@ _FRAGRANCE_NON_PERFUME_RE = re.compile(
     r'\bfragrances?\s+(?:candle|candles|diffuser|diffusers|oil|oils|lamp|lamps|wax|warmer|warmers)\b'
     r'|\b(?:scented\s+candle|scented\s+candles|reed\s+diffuser|reed\s+diffusers'
     r'|wax\s+melt|wax\s+melts|oil\s+burner|oil\s+burners|aromatherapy\s+diffuser)\b'
-    r'|\b(?:with|added|enriched\s+with|infused\s+with)\s+'
+    r'|\b(?:enriched\s+with|infused\s+with|with|added)\s+'
     r'(?:(?:natural|synthetic|artificial|floral|fruity|citrus|botanical|herbal)\s+)?fragrances?\b'
 )
 # Pre-compiled patterns to strip polysemous words for culinary vs confection disambiguation.
@@ -248,9 +248,10 @@ def _parse_value(raw) -> tuple[float, str]:
     """
     # bool / np.bool_ subclass int, so float(True)==1.0 would silently produce a
     # misleading £1 value.  Catch both before the numeric path so callers get a
-    # warning instead of a wrong but plausible-looking result.  np.bool_ is NOT a
-    # subclass of Python bool (isinstance(np.bool_(True), bool) is False), so it
-    # must be checked explicitly.
+    # warning instead of a wrong but plausible-looking result.  np.bool_ is a
+    # subclass of Python bool in numpy ≥ 1.20, so the isinstance check catches it
+    # via the bool arm; the explicit np.bool_ arm is kept as a belt-and-suspenders
+    # guard for older numpy versions where isinstance(np.bool_(True), bool) is False.
     if isinstance(raw, (bool, np.bool_)):
         return 0.0, " Warning: declared value was not a number; defaulted to £0 for risk assessment."
     if isinstance(raw, str):
@@ -427,6 +428,8 @@ def _is_normalised_float(value) -> bool:
     the caller (e.g. classify_row) has already parsed the value via _parse_value.
     Accepts Python float, int, and numpy numeric types (e.g. np.float64) that are
     coercible to float — but not bool/np.bool_ (which subclass int) or str.
+    np.bool_ is a subclass of bool in numpy ≥ 1.20; the explicit check covers
+    both old and new numpy.
     """
     if isinstance(value, (bool, np.bool_, str)):
         return False
@@ -499,7 +502,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # "scarf joint cutter") and garment-construction uses of "shawl" (e.g.
     # "shawl collar blazer", "shawl lapel jacket") — neither are textile articles
     # and both must not route to HS 6214 (scarves, 12% duty).
-    is_scarf = bool(_SCARF_RE.search(desc)) and not bool(_SCARF_TECHNICAL_RE.search(desc))
+    is_scarf = bool(_SCARF_RE.search(desc) and not _SCARF_TECHNICAL_RE.search(desc))
     # Material is the authoritative source for composition.  Only fall back to
     # description when the material field was not supplied, so that terms like
     # "silk-effect polyester" or "leather-look PU" in a description do not
@@ -530,12 +533,16 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             if is_silk and is_leather:
                 break
     else:
-        is_silk = bool(_SILK_RE.search(desc) and (
-            not _FAUX_SILK_RE.search(desc) or _GENUINE_SILK_RE.search(desc)
-        ))
-        is_leather = bool(_LEATHER_RE.search(desc) and (
-            not _FAUX_LEATHER_RE.search(desc) or _GENUINE_LEATHER_RE.search(desc)
-        ))
+        is_silk = bool(
+            _SILK_RE.search(desc) and (
+                not _FAUX_SILK_RE.search(desc) or _GENUINE_SILK_RE.search(desc)
+            )
+        )
+        is_leather = bool(
+            _LEATHER_RE.search(desc) and (
+                not _FAUX_LEATHER_RE.search(desc) or _GENUINE_LEATHER_RE.search(desc)
+            )
+        )
     # Either "fragrance-free" or "perfume-free" in description or material negates
     # the product being a fragrance/perfume; both flags suppress ALL perfume signals
     # (including cologne, aftershave, eau-de) not just the keyword they name.
