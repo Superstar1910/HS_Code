@@ -813,15 +813,21 @@ def classify_row(row) -> pd.Series:
         # hasattr(__index__) covers Python int and numpy integer scalars.
         # bool and np.bool_ are excluded explicitly: bool subclasses int, so
         # True+1=2 and False+1=1 would produce a misleading "Row 2:"/"Row 1:"
-        # prefix.  np.bool_ is NOT a subclass of Python bool (isinstance check
-        # returns False), but it does implement __index__, so it must be
-        # excluded separately to prevent the same misleading arithmetic.
+        # prefix.  In numpy < 2.0, np.bool_ had __index__ and subclassed bool;
+        # in numpy ≥ 2.0 it has neither, so the isinstance guard here is
+        # belt-and-suspenders across all supported numpy versions.
         display_idx = (
             (row_idx + 1)
             if hasattr(row_idx, "__index__") and not isinstance(row_idx, (bool, np.bool_))
             else row_idx
         )
-        prefix = f"Row {display_idx}: " if display_idx is not None else ""
+        # Also exclude bool types from the prefix: a bool index (e.g. False/True)
+        # satisfies `is not None` but produces a nonsensical "Row False:"/"Row True:"
+        # message.  The same isinstance guard that prevents incorrect +1 arithmetic
+        # above must suppress the prefix here so the error message is not confusing.
+        prefix = f"Row {display_idx}: " if (
+            display_idx is not None and not isinstance(display_idx, (bool, np.bool_))
+        ) else ""
         msg = f"{prefix}Classification failed: {type(e).__name__}: {str(e)}"
         suffix = val_warning
         msg_budget = max(10, 250 - len(suffix))
