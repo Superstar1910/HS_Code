@@ -254,6 +254,12 @@ def _parse_value(raw) -> tuple[float, str]:
     # guard for older numpy versions where isinstance(np.bool_(True), bool) is False.
     if isinstance(raw, (bool, np.bool_)):
         return 0.0, " Warning: declared value was not a number; defaulted to £0 for risk assessment."
+    # pd.NaT is not bool, not str, and float(pd.NaT) raises TypeError.  Catch it
+    # explicitly so it returns a clear "missing" warning rather than falling through
+    # to the generic exception handler which would still return 0.0 but with a less
+    # informative "could not be parsed" message.
+    if raw is pd.NaT:
+        return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
     if isinstance(raw, str):
         # Strip currency symbols and ISO 4217 text codes in one pass; strip()
         # afterward removes any whitespace left between the code and the number
@@ -462,7 +468,13 @@ def _safe_str(v) -> str:
     return str(v)
 
 
-def classify_product(description, material, origin, category, value) -> dict:
+def classify_product(
+    description: str,
+    material: str,
+    origin: str,
+    category: str,
+    value: float,
+) -> dict:
     """Normalise inputs then delegate to the cached implementation."""
     v = _normalise_value(value)
     # _safe_str handles None, np.nan, pd.NA, and all other non-string types that
@@ -496,6 +508,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # explanation note differs and that is appended by classify_product after the
     # cache lookup.
     hv_note = " High declared value flagged for additional customs scrutiny." if high_value else ""
+    # Pre-computed once so every subsequent `not category_lower` reference is a
+    # variable read rather than a Python truthiness evaluation on a string.
+    _no_category: bool = not category_lower
 
     # Pre-compute all keyword flags once to avoid redundant regex evaluation.
     # _SCARF_TECHNICAL_RE excludes engineering/woodworking uses of "scarf" (e.g.
@@ -622,7 +637,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # 0% VAT) instead of scarves (HS 6214, 12% duty).
     # category="food" always wins regardless of other flags.
     is_food = category_lower == "food" or (
-        is_confectionery and not category_lower
+        is_confectionery and _no_category
         and not is_leather and not is_silk and not is_fashion and not is_scarf
     )
     # Bag detection: fashion_accessories and food categories override bag keywords.
@@ -791,7 +806,7 @@ def _format_confidence(conf) -> str:
         return "0%"
 
 
-def classify_row(row) -> pd.Series:
+def classify_row(row: pd.Series) -> pd.Series:
     """Apply classify_product to a DataFrame row; safe for use with df.apply()."""
     # Parse value before the try/except so val is always defined in the except
     # handler — preserving the correct risk rating even when classify_product
@@ -1260,7 +1275,12 @@ elif page == "Classify":
     if st.session_state["last_result"] is not None:
         r = st.session_state["last_result"]
         st.subheader("Classification Result")
-        if r["hs6"] == UNCLASSIFIED_CODE:
+        if r["hs6"] == ERROR_CODE:
+            st.error(
+                "Classification encountered an internal error — see the explanation below. "
+                "Refine the product description and retry."
+            )
+        elif r["hs6"] == UNCLASSIFIED_CODE:
             st.warning(
                 "Could not assign an HS code from the information provided. "
                 "Refine the product description or manually assign a commodity code before shipment."
@@ -1364,7 +1384,7 @@ elif page == "Bulk Upload":
             st.error(_msg)
         elif _level == "warning":
             st.warning(_msg)
-        else:
+        else:  # "info" or any future level
             st.info(_msg)
 
     bulk = st.session_state["bulk_result"]
