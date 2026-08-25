@@ -215,8 +215,11 @@ ERROR_CODE = "ERROR"
 UNCLASSIFIED_CODE = "UNCLASSIFIED"
 
 # Columns pulled from a classified result_df when populating the review queue
-# during bulk upload.  Defined at module level so the list is created once.
-_BULK_QUEUE_COLS = ["description", "value", "uk_code", "confidence", "explanation", "risk"]
+# during bulk upload.  Defined at module level as a tuple (immutable constant)
+# so the object is created once and cannot be accidentally mutated at call sites.
+# Note: pandas treats a bare tuple as a MultiIndex key, so call sites that use
+# this for column selection must wrap it in list() — see _process_bulk_upload.
+_BULK_QUEUE_COLS = ("description", "value", "uk_code", "confidence", "explanation", "risk")
 
 # Maximum number of distinct (desc, material, category, high_value) tuples held in
 # the classification cache.  Origin is excluded from the key because classification
@@ -1039,7 +1042,8 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         # construction overhead; chunking lets us update the progress bar between
         # chunks without reverting to the slower per-row loop.
         chunk_size = max(5, n // 100)
-        _progress = st.progress(0.0, text=f"Classified 0 of {n} rows…")
+        _row_word = "row" if n == 1 else "rows"
+        _progress = st.progress(0.0, text=f"Classified 0 of {n} {_row_word}…")
         _chunks: list[pd.DataFrame] = []
         try:
             for _start in range(0, n, chunk_size):
@@ -1047,12 +1051,19 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
                 _chunks.append(
                     input_df.iloc[_start:_end].apply(classify_row, axis=1)
                 )
-                _progress.progress(_end / n, text=f"Classified {_end} of {n} rows…")
+                _progress.progress(_end / n, text=f"Classified {_end} of {n} {_row_word}…")
         finally:
             _progress.empty()
         # ignore_index=True resets the combined index to 0‥n-1, making the
         # subsequent axis=1 concat with input_df (also 0‥n-1 from reset_index)
         # robust regardless of how each chunk's iloc range was labelled.
+        # Defensive guard: _chunks is non-empty whenever n > 0, which is
+        # guaranteed by the df.empty check above, but an explicit guard here
+        # prevents a cryptic ValueError from pd.concat([]) in case that
+        # invariant is ever broken by future refactoring.
+        if not _chunks:
+            st.session_state["_bulk_messages"].append(("error", "Classification produced no output rows — the input DataFrame may be empty."))
+            return
         classified = pd.concat(_chunks, ignore_index=True)
         result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
@@ -1082,8 +1093,15 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             "Timestamp": datetime.now().isoformat(timespec="microseconds"),
             "Event": f"Bulk upload: {summary} from '{filename}'",
         })
+        # Pre-compute the CSV download bytes once at classification time.
+        # Streamlit reruns the entire script on every user interaction, so
+        # calling result_df.to_csv().encode() inside st.download_button on
+        # each render would be O(n) work per keypress — storing it here
+        # ensures the encoding is done once per upload, not once per rerun.
+        result_csv_bytes = result_df.to_csv(index=False).encode("utf-8-sig")
         st.session_state["bulk_result"] = {
             "df": result_df,
+            "csv_bytes": result_csv_bytes,
             "summary": summary,
             "filename": filename,
             "error_count": error_count,
@@ -1097,7 +1115,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     _queue_changed = False
     try:
         queue_before = len(st.session_state["review_items"])
-        for row in queueable_df[_BULK_QUEUE_COLS].to_dict("records"):
+        for row in queueable_df[list(_BULK_QUEUE_COLS)].to_dict("records"):
             _add_to_review_queue({
                 "description": _safe_str(row.get("description", "")),
                 "value": row.get("value", 0.0),
@@ -1398,9 +1416,11 @@ elif page == "Bulk Upload":
         else:
             st.success(bulk["summary"])
         st.dataframe(result_df, use_container_width=True)
+        # Use pre-computed bytes stored at classification time to avoid an
+        # O(n) to_csv().encode() call on every Streamlit rerun.
         st.download_button(
             "Download Results CSV",
-            data=result_df.to_csv(index=False).encode("utf-8-sig"),
+            data=bulk["csv_bytes"],
             file_name="hs_classification_results.csv",
             mime="text/csv",
         )
