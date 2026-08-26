@@ -889,6 +889,9 @@ def _add_to_review_queue(result: dict) -> None:
         st.session_state["review_keys"].add(key)
         st.session_state["review_items"].append({
             "Product": _safe_str(result.get("description", "")),
+            # Store the normalised float so the column sorts numerically and
+            # renders consistently regardless of how the raw value was supplied.
+            "Value (£)": safe_val,
             "Suggested Code": result.get("uk_code", UNCLASSIFIED_CODE),
             "Confidence": _format_confidence(result.get("confidence", 0.0)),
             "Explanation": _safe_str(result.get("explanation", "")),
@@ -1433,7 +1436,7 @@ elif page == "Review Queue":
     items = st.session_state["review_items"]
 
     if items:
-        display_cols = ["Product", "Suggested Code", "Confidence", "Risk", "Status", "Explanation"]
+        display_cols = ["Product", "Value (£)", "Suggested Code", "Confidence", "Risk", "Status", "Explanation"]
         review_df = pd.DataFrame(items, columns=display_cols)
 
         # Editable table: Status column is a dropdown; all other columns are read-only.
@@ -1442,13 +1445,18 @@ elif page == "Review Queue":
         edited_df = st.data_editor(
             review_df,
             column_config={
+                "Value (£)": st.column_config.NumberColumn(
+                    "Value (£)",
+                    format="£%.2f",
+                    help="Declared customs value used for classification and risk assessment.",
+                ),
                 "Status": st.column_config.SelectboxColumn(
                     "Status",
                     options=[STATUS_PENDING, STATUS_APPROVED, STATUS_OVERRIDDEN],
                     required=True,
                 ),
             },
-            disabled=["Product", "Suggested Code", "Confidence", "Risk", "Explanation"],
+            disabled=["Product", "Value (£)", "Suggested Code", "Confidence", "Risk", "Explanation"],
             num_rows="fixed",
             hide_index=True,
             use_container_width=True,
@@ -1497,6 +1505,21 @@ elif page == "Review Queue":
                 "{count} pending item(s) flagged for analyst override.",
                 "⚠️",
             )
+
+        st.write("")
+        if st.button("🗑️ Clear Queue", help="Remove all items from the review queue. This cannot be undone."):
+            cleared_count = len(st.session_state["review_items"])
+            st.session_state["review_items"].clear()
+            st.session_state["review_keys"].clear()
+            st.session_state["_review_edit_version"] += 1
+            if cleared_count:
+                ts = datetime.now().isoformat(timespec="microseconds")
+                st.session_state["audit_log"].append({
+                    "Timestamp": ts,
+                    "Event": f"Review Queue cleared: {cleared_count} item(s) removed.",
+                })
+                st.toast(f"Queue cleared — {cleared_count} item(s) removed.", icon="🗑️")
+            st.rerun()
     else:
         st.info("No items in the review queue. Classify a product first or use Bulk Upload.")
 
@@ -1516,9 +1539,17 @@ elif page == "Audit Trail":
     else:
         logs = pd.DataFrame(columns=["Timestamp", "Event"])
     st.dataframe(logs, use_container_width=True)
+    # Cache the CSV bytes keyed on the number of log entries so the expensive
+    # to_csv().encode() call is not repeated on every Streamlit rerun.  The
+    # count is a sufficient cache key because log entries are append-only and
+    # the seed logs are fixed at session start; a matching count always means
+    # the same content.
+    _audit_csv_key = f"_audit_csv_{len(all_logs)}"
+    if _audit_csv_key not in st.session_state:
+        st.session_state[_audit_csv_key] = logs.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
         "Download Audit Log CSV",
-        data=logs.to_csv(index=False).encode("utf-8-sig"),
+        data=st.session_state[_audit_csv_key],
         file_name="audit_log.csv",
         mime="text/csv",
     )
