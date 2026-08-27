@@ -779,7 +779,11 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
                 + vat_note + hv_note
             ),
         })
-    elif is_fashion:
+    elif is_fashion and not is_food:
+        # is_food always takes precedence over is_fashion (e.g. category="food" on a
+        # "belt" description must route to HS 2106, not HS 6217).  is_food is checked
+        # first in the elif chain above, so this guard is redundant in practice but
+        # makes the intent explicit and defends against future chain reordering.
         return types.MappingProxyType({
             "hs6": "621790",
             "uk_code": "6217900000",
@@ -1150,6 +1154,11 @@ st.session_state.setdefault("last_result", None)
 # Streamlit to discard the widget's stored edit delta, preventing a stale delta
 # from replaying against freshly-updated item statuses after a bulk action rerun.
 st.session_state.setdefault("_review_edit_version", 0)
+# Single-entry audit CSV cache: a (log_count, csv_bytes) tuple or None.
+# Replacing the old dynamic _audit_csv_{n} pattern that accumulated one session-
+# state key per unique log length and was never evicted, leaking memory on busy
+# sessions.
+st.session_state.setdefault("_audit_csv_cache", None)
 if "seed_logs" not in st.session_state:
     _seed_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     st.session_state["seed_logs"] = [
@@ -1539,17 +1548,24 @@ elif page == "Audit Trail":
     else:
         logs = pd.DataFrame(columns=["Timestamp", "Event"])
     st.dataframe(logs, use_container_width=True)
-    # Cache the CSV bytes keyed on the number of log entries so the expensive
-    # to_csv().encode() call is not repeated on every Streamlit rerun.  The
-    # count is a sufficient cache key because log entries are append-only and
-    # the seed logs are fixed at session start; a matching count always means
-    # the same content.
-    _audit_csv_key = f"_audit_csv_{len(all_logs)}"
-    if _audit_csv_key not in st.session_state:
-        st.session_state[_audit_csv_key] = logs.to_csv(index=False).encode("utf-8-sig")
+    # Cache the CSV bytes so the expensive to_csv().encode() call is not
+    # repeated on every Streamlit rerun.  The log count is a sufficient cache
+    # key because entries are append-only and seed logs are fixed at session
+    # start; a matching count always means identical content.
+    # A single session-state key ("_audit_csv_cache") holds a (count, bytes)
+    # tuple and is updated only when the count changes — replacing the previous
+    # _audit_csv_{n} pattern that created a new key per unique count and never
+    # evicted old entries, leaking one entry per audit event over the session.
+    _audit_len = len(all_logs)
+    _cached_audit = st.session_state["_audit_csv_cache"]
+    if _cached_audit is None or _cached_audit[0] != _audit_len:
+        _audit_csv_bytes = logs.to_csv(index=False).encode("utf-8-sig")
+        st.session_state["_audit_csv_cache"] = (_audit_len, _audit_csv_bytes)
+    else:
+        _audit_csv_bytes = _cached_audit[1]
     st.download_button(
         "Download Audit Log CSV",
-        data=st.session_state[_audit_csv_key],
+        data=_audit_csv_bytes,
         file_name="audit_log.csv",
         mime="text/csv",
     )
