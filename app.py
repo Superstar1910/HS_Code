@@ -257,11 +257,12 @@ def _parse_value(raw) -> tuple[float, str]:
     # guard for older numpy versions where isinstance(np.bool_(True), bool) is False.
     if isinstance(raw, (bool, np.bool_)):
         return 0.0, " Warning: declared value was not a number; defaulted to £0 for risk assessment."
-    # pd.NaT is not bool, not str, and float(pd.NaT) raises TypeError.  Catch it
-    # explicitly so it returns a clear "missing" warning rather than falling through
-    # to the generic exception handler which would still return 0.0 but with a less
-    # informative "could not be parsed" message.
-    if raw is pd.NaT:
+    # pd.NaT and pd.NA are not bool, not str, and float() raises TypeError on them.
+    # Catch both explicitly so callers get a clear "missing" warning rather than
+    # falling through to the generic exception handler which would still return 0.0
+    # but with the less informative "could not be parsed" message.
+    # pd.NA is the pandas nullable-extension NA (distinct from pd.NaT and np.nan).
+    if raw is pd.NaT or raw is pd.NA:
         return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
     if isinstance(raw, str):
         # Strip currency symbols and ISO 4217 text codes in one pass; strip()
@@ -716,7 +717,11 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "vat": "20%",
             "explanation": "Classified under travel goods, handbags and similar containers (HS 4202); verify material composition for precise subheading — leather surface attracts 4202.21/4202.31 (16% duty)." + hv_note,
         })
-    elif is_scarf and not is_food:
+    elif is_scarf and not is_bag and not is_food:
+        # Explicit `not is_bag` guard mirrors the silk-scarf branch above.
+        # Although the preceding `elif is_bag` arms already prevent this branch
+        # from being reached when is_bag is True, the guard is stated explicitly
+        # so the intent is self-evident and future chain reordering is safe.
         return types.MappingProxyType({
             "hs6": "621490",
             "uk_code": "6214900000",
@@ -912,7 +917,7 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
         if item["Status"] == STATUS_PENDING:
             # Never bulk-action items with no assigned code; they require manual
             # code entry before either approval or override.
-            if item.get("Suggested Code") in {UNCLASSIFIED_CODE, ERROR_CODE}:
+            if item.get("Suggested Code", UNCLASSIFIED_CODE) in {UNCLASSIFIED_CODE, ERROR_CODE}:
                 skipped_unclassified += 1
                 continue
             item["Status"] = new_status
@@ -1036,7 +1041,9 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         )))
 
     # Warn if pre-existing result columns will be overwritten.
-    overlapping = sorted(col for col in RESULT_COLUMNS if col in df.columns)
+    # Use set intersection so both operands are O(1)-lookup sets rather than
+    # iterating RESULT_COLUMNS against a potentially large column index.
+    overlapping = sorted(RESULT_COLUMNS & set(df.columns))
     if overlapping:
         st.session_state["_bulk_messages"].append(("warning", f"The following columns from your CSV will be replaced by classification results: {', '.join(overlapping)}"))
     # Drop any pre-existing result columns to avoid duplicate columns after concat.
@@ -1086,12 +1093,17 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     try:
         error_count = int(_is_error.sum())
         unclassified_count = int(_is_unclassified.sum())
+        nrows = len(result_df)
+        classified_count = nrows - error_count - unclassified_count
         detail_parts = []
+        if classified_count < nrows:
+            # Only show the classified sub-count when there are problem rows; if
+            # everything succeeded the headline number alone is unambiguous.
+            detail_parts.append(f"{classified_count} classified")
         if unclassified_count:
             detail_parts.append(f"{unclassified_count} unclassified")
         if error_count:
             detail_parts.append(f"{error_count} error{'s' if error_count != 1 else ''}")
-        nrows = len(result_df)
         row_word = "row" if nrows == 1 else "rows"
         summary = f"Processed {nrows} {row_word}"
         if detail_parts:
@@ -1111,6 +1123,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             "csv_bytes": result_csv_bytes,
             "summary": summary,
             "filename": filename,
+            "classified_count": classified_count,
             "error_count": error_count,
             "unclassified_count": unclassified_count,
         }
