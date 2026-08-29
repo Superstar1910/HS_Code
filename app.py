@@ -7,11 +7,12 @@ import math
 import re
 import types
 from collections import Counter
+from datetime import datetime, timedelta
+
 import altair as alt
 import numpy as np
-import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+import streamlit as st
 
 st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
 
@@ -217,9 +218,11 @@ UNCLASSIFIED_CODE = "UNCLASSIFIED"
 # Columns pulled from a classified result_df when populating the review queue
 # during bulk upload.  Defined at module level as a tuple (immutable constant)
 # so the object is created once and cannot be accidentally mutated at call sites.
-# Note: pandas treats a bare tuple as a MultiIndex key, so call sites that use
-# this for column selection must wrap it in list() — see _process_bulk_upload.
+# Note: pandas treats a bare tuple as a MultiIndex key, so _BULK_QUEUE_COLS_LIST
+# (a pre-built list) is used at call sites — building it once here avoids a
+# repeated tuple-to-list conversion inside _process_bulk_upload.
 _BULK_QUEUE_COLS = ("description", "value", "uk_code", "confidence", "explanation", "risk")
+_BULK_QUEUE_COLS_LIST: list[str] = list(_BULK_QUEUE_COLS)
 
 # Maximum number of distinct (desc, material, category, high_value) tuples held in
 # the classification cache.  Origin is excluded from the key because classification
@@ -499,7 +502,7 @@ def classify_product(
         _safe_str(category).strip().lower(),
         v >= HIGH_VALUE_THRESHOLD,
     ))
-    result["explanation"] = result["explanation"] + origin_note
+    result["explanation"] += origin_note
     return result
 
 
@@ -814,7 +817,7 @@ def _format_confidence(conf) -> str:
     """Return confidence as a clamped percentage string, e.g. '94%'."""
     try:
         return f"{min(100, max(0, round(float(conf) * 100)))}%"
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return "0%"
 
 
@@ -1135,7 +1138,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     _queue_changed = False
     try:
         queue_before = len(st.session_state["review_items"])
-        for row in queueable_df[list(_BULK_QUEUE_COLS)].to_dict("records"):
+        for row in queueable_df[_BULK_QUEUE_COLS_LIST].to_dict("records"):
             _add_to_review_queue({
                 "description": _safe_str(row.get("description", "")),
                 "value": row.get("value", 0.0),
