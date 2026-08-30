@@ -884,7 +884,12 @@ def _add_to_review_queue(result: dict) -> None:
     Silently ignores ERROR and UNCLASSIFIED items — callers filter these, but
     this guard prevents accidental queue corruption if called directly.
     """
-    if result.get("uk_code", UNCLASSIFIED_CODE) in {ERROR_CODE, UNCLASSIFIED_CODE}:
+    # Use `or` so that an explicit None or empty-string uk_code is treated the
+    # same as a missing key — both map to UNCLASSIFIED_CODE and are filtered out.
+    # dict.get(key, default) only uses the default when the key is absent; it
+    # returns None when the key is present with value None, which would bypass
+    # the guard and store an item with "Suggested Code": None in the queue.
+    if (result.get("uk_code") or UNCLASSIFIED_CODE) in {ERROR_CODE, UNCLASSIFIED_CODE}:
         return
     raw_val = result.get("value", 0.0)
     safe_val = _normalise_value(raw_val)
@@ -904,10 +909,14 @@ def _add_to_review_queue(result: dict) -> None:
             # Store the normalised float so the column sorts numerically and
             # renders consistently regardless of how the raw value was supplied.
             "Value (£)": safe_val,
-            "Suggested Code": result.get("uk_code", UNCLASSIFIED_CODE),
+            "Suggested Code": result.get("uk_code") or UNCLASSIFIED_CODE,
             "Confidence": _format_confidence(result.get("confidence", 0.0)),
             "Explanation": _safe_str(result.get("explanation", "")),
-            "Risk": result.get("risk", RISK_AMBER),
+            # Use `or` rather than dict.get default so an explicit None value
+            # (e.g. a programmatic caller that omits or nulls the risk field)
+            # still falls back to RISK_AMBER rather than storing None in the
+            # queue, which would cause a rendering error in the data_editor.
+            "Risk": result.get("risk") or RISK_AMBER,
             "Status": STATUS_PENDING,
         })
 
@@ -1269,7 +1278,7 @@ elif page == "Classify":
                 "may return UNCLASSIFIED for food or confectionery items — select 'food' for edible products."
             ),
         )
-        value = st.number_input("Declared Value (£)", min_value=0.0, value=250.0, step=10.0)
+        value = st.number_input("Declared Value (£)", min_value=0.0, value=250.0, step=1.0)
 
         if st.button("Run Classification"):
             if not description.strip():
