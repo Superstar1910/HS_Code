@@ -123,10 +123,13 @@ _FAUX_LEATHER_RE = re.compile(
 # non-leather (and thus under-declared at 3.7% duty instead of 16%).
 _GENUINE_LEATHER_RE = re.compile(r'\b(?:genuine|real|authentic)[-\s]+leathers?\b')
 _GENUINE_SILK_RE = re.compile(r'\b(?:genuine|real|authentic)[-\s]+silks?\b')
-# Matches wallet / coin-purse product types.  Within the leather-bag branch these
-# route to HS 4202.31 (leather outer surface, small articles such as wallets) rather
-# than 4202.21 (handbags), correcting a ~12 pp duty-rate error.
-_WALLET_RE = re.compile(r'\bwallets?\b')
+# Matches wallet and coin-purse product types.  Within the leather-bag branch these
+# route to HS 4202.31 (leather outer surface, small articles such as wallets and
+# coin purses) rather than 4202.21 (handbags), correcting a ~12 pp duty-rate error.
+# Coin purse: both hyphenated and spaced forms are matched ("coin-purse", "coin purse").
+# Non-leather coin purses (textile/plastic outer) attract 4202.32 instead, but they
+# never reach this branch (is_leather is False for them) and route to elif is_bag.
+_WALLET_RE = re.compile(r'\bwallets?\b|\bcoin[-\s]+purses?\b')
 _EURO_DECIMAL_RE = re.compile(r',\d{1,2}\Z')
 _PERFUME_RE = re.compile(
     r'\b(?:perfumes?|fragrances?|colognes?|aftershaves?'
@@ -699,7 +702,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
                 "risk": RISK_RED if high_value else RISK_AMBER,
                 "duty": "16%",
                 "vat": "20%",
-                "explanation": "Classified under leather wallets and similar small articles (HS 4202.31); verify precise subheading — coin purses: 4202.32." + hv_note,
+                "explanation": "Classified under leather wallets, coin purses and similar small leather articles (HS 4202.31); verify precise subheading — non-leather coin purses (textile/plastic outer): 4202.32." + hv_note,
             })
         return types.MappingProxyType({
             "hs6": "420221",
@@ -708,7 +711,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "16%",
             "vat": "20%",
-            "explanation": "Classified under leather travel goods and handbags (HS 4202.21); verify specific subheading — wallets and small articles: 4202.31/4202.32." + hv_note,
+            "explanation": "Classified under leather travel goods and handbags (HS 4202.21); verify specific subheading — leather wallets, coin purses and small articles: 4202.31; non-leather equivalents: 4202.32." + hv_note,
         })
     elif is_bag:
         return types.MappingProxyType({
