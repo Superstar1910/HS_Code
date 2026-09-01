@@ -646,9 +646,16 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # "fudge shawl" with blank category from being routed to food (HS 210690,
     # 0% VAT) instead of scarves (HS 6214, 12% duty).
     # category="food" always wins regardless of other flags.
+    # is_perfume is excluded from the confectionery keyword path: "chocolate
+    # perfume", "truffle cologne", "caramel eau de parfum", etc. with a blank
+    # category contain confectionery keywords only as scent/flavour descriptors
+    # and are perfume products (HS 3303), not food preparations (HS 2106).
+    # Without this guard is_food=True suppresses the perfume branch and the
+    # item is incorrectly classified as food at the wrong duty/VAT rates.
     is_food = category_lower == "food" or (
         is_confectionery and _no_category
         and not is_leather and not is_silk and not is_fashion and not is_scarf
+        and not is_perfume
     )
     # Bag detection: fashion_accessories and food categories override bag keywords.
     # fashion_accessories: "handbag charm" is an accessory, not a bag.
