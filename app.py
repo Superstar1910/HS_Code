@@ -721,6 +721,22 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "explanation": "Classified under leather travel goods and handbags (HS 4202.21); verify specific subheading — leather wallets, coin purses and small articles: 4202.31; non-leather equivalents: 4202.32." + hv_note,
         })
     elif is_bag:
+        # Wallets and coin purses without a leather outer surface are HS 4202.32
+        # (small articles of a kind normally carried in the pocket or handbag),
+        # not 4202.29 (handbags/other containers).  The same _WALLET_RE that
+        # distinguishes leather-wallet (4202.31) from leather-handbag (4202.21)
+        # above is reused here so the leather and non-leather branches stay in sync.
+        _is_wallet = bool(_WALLET_RE.search(desc))
+        if _is_wallet:
+            return types.MappingProxyType({
+                "hs6": "420232",
+                "uk_code": "4202320000",
+                "confidence": 0.72,
+                "risk": RISK_RED if high_value else RISK_AMBER,
+                "duty": "3.7%",
+                "vat": "20%",
+                "explanation": "Classified under small articles normally carried in the pocket or handbag (HS 4202.32); verify outer surface material — leather outer: 4202.31 (16% duty)." + hv_note,
+            })
         return types.MappingProxyType({
             "hs6": "420229",
             "uk_code": "4202290000",
@@ -728,7 +744,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "risk": RISK_RED if high_value else RISK_AMBER,
             "duty": "3.7%",
             "vat": "20%",
-            "explanation": "Classified under travel goods, handbags and similar containers (HS 4202); verify material composition for precise subheading — leather surface attracts 4202.21/4202.31 (16% duty)." + hv_note,
+            "explanation": "Classified under travel goods, handbags and similar containers (HS 4202); verify material composition for precise subheading — leather surface attracts 4202.21/4202.31 (16% duty); non-leather wallets and coin purses: 4202.32." + hv_note,
         })
     elif is_scarf and not is_bag and not is_food:
         # Explicit `not is_bag` guard mirrors the silk-scarf branch above.
@@ -1269,7 +1285,7 @@ if page == "Dashboard":
         )
         .properties(height=320)
     )
-    st.altair_chart(_risk_chart, use_container_width=True)
+    st.altair_chart(_risk_chart, width="stretch")
 
 elif page == "Classify":
     st.title("Classify Product")
@@ -1462,7 +1478,7 @@ elif page == "Bulk Upload":
             st.warning(bulk["summary"])
         else:
             st.success(bulk["summary"])
-        st.dataframe(result_df, use_container_width=True)
+        st.dataframe(result_df, width="stretch")
         # Use pre-computed bytes stored at classification time to avoid an
         # O(n) to_csv().encode() call on every Streamlit rerun.
         st.download_button(
@@ -1503,7 +1519,7 @@ elif page == "Review Queue":
             disabled=["Product", "Value (£)", "Suggested Code", "Confidence", "Risk", "Explanation"],
             num_rows="fixed",
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
             key=f"review_queue_editor_{st.session_state['_review_edit_version']}",
         )
 
@@ -1582,7 +1598,7 @@ elif page == "Audit Trail":
         )
     else:
         logs = pd.DataFrame(columns=["Timestamp", "Event"])
-    st.dataframe(logs, use_container_width=True)
+    st.dataframe(logs, width="stretch")
     # Cache the CSV bytes so the expensive to_csv().encode() call is not
     # repeated on every Streamlit rerun.  The log count is a sufficient cache
     # key because entries are append-only and seed logs are fixed at session
