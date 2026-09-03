@@ -290,6 +290,14 @@ def _parse_value(raw) -> tuple[float, str]:
         # producing the less informative "could not be parsed" message.
         if not s:
             return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
+        # Re-apply the currency strip after lstrip('+'): a leading '+' in front of
+        # an ISO code (e.g. "+GBP 250", "+USD1250") blocks the first pass because
+        # the regex uses a '^' anchor that cannot match when '+' precedes the code.
+        # After stripping the '+', a second pass removes the now-unmasked prefix.
+        # This is a no-op for purely numeric strings (no currency code remains).
+        s = _VALUE_STRIP_RE.sub('', s).strip()
+        if not s:
+            return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
         # Detect European decimal format: comma followed by 1–2 digits at end,
         # with exactly one comma (e.g. "1.250,00" → "1250.00"). The single-comma
         # guard prevents "1,250,00" (two commas, a common typo) from matching the
