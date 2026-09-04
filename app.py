@@ -484,7 +484,7 @@ def classify_product(
     origin: str,
     category: str,
     value: float,
-) -> dict:
+) -> dict[str, object]:
     """Normalise inputs then delegate to the cached implementation."""
     v = _normalise_value(value)
     # _safe_str handles None, np.nan, pd.NA, and all other non-string types that
@@ -510,7 +510,12 @@ def classify_product(
 
 
 @functools.lru_cache(maxsize=_CACHE_MAX_SIZE)
-def _classify_product_cached(desc, material_lower, category_lower, high_value) -> types.MappingProxyType:
+def _classify_product_cached(
+    desc: str,
+    material_lower: str,
+    category_lower: str,
+    high_value: bool,
+) -> types.MappingProxyType:
     # high_value is a bool; using it instead of the raw value means products that
     # share the same description/material/category and the same high-value status
     # hit the same cache entry regardless of exact declared price.  Origin is NOT
@@ -1005,6 +1010,17 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             low_memory=False,
         )
         df.columns = df.columns.str.strip().str.lower()
+        # Reject files with duplicate column names after normalisation.
+        # Duplicate columns cause DataFrame column selection to return a DataFrame
+        # instead of a Series, producing cryptic downstream errors rather than a
+        # clear validation message.
+        _dup_cols = [col for col, cnt in Counter(df.columns).items() if cnt > 1]
+        if _dup_cols:
+            st.session_state["_bulk_messages"].append(("error", (
+                f"Duplicate column names found: {', '.join(sorted(_dup_cols))}. "
+                "Rename the columns and re-upload."
+            )))
+            return
         # Warn if any cell contains U+FFFD (the Unicode replacement character),
         # which indicates bytes that could not be decoded from the file's encoding.
         # Generator short-circuits on the first matching column instead of scanning
@@ -1103,7 +1119,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         classified = pd.concat(_chunks, ignore_index=True)
         result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
-        st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
+        st.session_state["_bulk_messages"].append(("error", f"Classification or result assembly failed: {type(e).__name__}: {e}"))
         return
 
     # Compute error/unclassified masks once; reused for the summary, the queue
