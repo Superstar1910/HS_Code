@@ -113,7 +113,11 @@ _FAUX_SILK_RE = re.compile(
     r'|\bman[-\s]?made[-\s]+silks?\b'
 )
 _FAUX_LEATHER_RE = re.compile(
-    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane|eco|bonded)[-\s]+leathers?\b'
+    # pvc/polyvinyl added: PVC (polyvinyl chloride) leather is a common synthetic
+    # substitute for genuine leather.  Without this, "pvc leather bag" escaped the
+    # faux guard and attracted the 16% genuine-leather duty code (HS 4202.21)
+    # instead of the correct 3.7% non-leather code (HS 4202.29).
+    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|pvc|polyurethane|polyvinyl|eco|bonded)[-\s]+leathers?\b'
 )
 # Explicit "genuine / real / authentic" qualifiers in the same material segment
 # override a co-present faux marker.  This handles supplier material strings that
@@ -247,6 +251,10 @@ def _parse_value(raw) -> tuple[float, str]:
     and has been defaulted to 0.0.
     Handles common CSV formats: "£1,250.00", "$500", "1,000.50",
     "GBP 250", "250 USD", "EUR1250,00", "1,250,000", "£12,345,678.90".
+    Unicode minus/dash variants (U+2212 MINUS SIGN, U+2013 EN DASH,
+    U+2014 EM DASH, etc.) are normalised to ASCII hyphen before processing
+    so copy-pasted negative values from Excel or Word are handled correctly.
+    Strings longer than 100 characters are rejected as malformed.
     """
     # bool / np.bool_ subclass int, so float(True)==1.0 would silently produce a
     # misleading £1 value.  Catch both before the numeric path so callers get a
@@ -256,6 +264,27 @@ def _parse_value(raw) -> tuple[float, str]:
     if isinstance(raw, (bool, np.bool_)):
         return 0.0, " Warning: declared value was not a number; defaulted to £0 for risk assessment."
     if isinstance(raw, str):
+        # Guard against pathologically long strings before any regex processing.
+        # The longest plausible value string (e.g. "£12,345,678,901,234.56") is
+        # well under 50 characters; beyond 100 the input is certainly malformed
+        # or is free text placed in the wrong column.
+        if len(raw) > 100:
+            return 0.0, " Warning: declared value string is too long to parse; defaulted to £0 for risk assessment."
+        # Normalise common Unicode minus/dash variants to ASCII hyphen before any
+        # structural parsing.  Values copy-pasted from Excel (U+2212 MINUS SIGN),
+        # Word (U+2013 EN DASH, U+2014 EM DASH), or web forms frequently carry
+        # these characters.  Without normalisation "−250" (U+2212) passes the
+        # startswith('-') guard silently, falls through every format branch,
+        # reaches float() which raises ValueError, and yields a misleading
+        # "could not be parsed" warning instead of the correct "negative value" one.
+        raw = (
+            raw
+            .replace('−', '-')  # U+2212 MINUS SIGN (Excel negative numbers)
+            .replace('–', '-')  # U+2013 EN DASH
+            .replace('—', '-')  # U+2014 EM DASH
+            .replace('―', '-')  # U+2015 HORIZONTAL BAR
+            .replace('‒', '-')  # U+2012 FIGURE DASH
+        )
         # Strip currency symbols and ISO 4217 text codes in one pass; strip()
         # afterward removes any whitespace left between the code and the number
         # (e.g. "GBP 250" → "GBP 250" → sub → " 250" → strip → "250").
@@ -799,17 +828,19 @@ def classify_row(row) -> pd.Series:
         return pd.Series(result)
     except Exception as e:
         row_idx = getattr(row, "name", None)
-        # hasattr(__index__) covers Python int and numpy integer scalars.
-        # bool and np.bool_ are excluded explicitly: bool subclasses int, so
-        # True+1=2 and False+1=1 would produce a misleading "Row 2:"/"Row 1:"
-        # prefix.  np.bool_ is NOT a subclass of Python bool (isinstance check
-        # returns False), but it does implement __index__, so it must be
-        # excluded separately to prevent the same misleading arithmetic.
-        display_idx = (
-            (row_idx + 1)
-            if hasattr(row_idx, "__index__") and not isinstance(row_idx, (bool, np.bool_))
-            else row_idx
+        # Convert 0-based DataFrame index to a 1-based "Row N" label only for
+        # plain integer-like indices (Python int and numpy integer scalars).
+        # isinstance(row_idx, (int, np.integer)) is more precise than
+        # hasattr(__index__): it excludes enum.IntEnum and other custom types
+        # that implement __index__ but are not row indices, and it avoids the
+        # now-inaccurate comment about np.bool_ — np.bool_ IS a subclass of
+        # Python bool in numpy ≥ 1.20, so the explicit exclusion remains
+        # necessary and is clearer via the isinstance guard.
+        _is_int_idx = (
+            isinstance(row_idx, (int, np.integer))
+            and not isinstance(row_idx, (bool, np.bool_))
         )
+        display_idx = (row_idx + 1) if _is_int_idx else row_idx
         prefix = f"Row {display_idx}: " if display_idx is not None else ""
         msg = f"{prefix}Classification failed: {type(e).__name__}: {str(e)}"
         suffix = val_warning
@@ -1062,6 +1093,12 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     _queue_changed = False
     try:
         queue_before = len(st.session_state["review_items"])
+        # Defensive check: verify all expected columns exist before slicing.
+        # Missing columns indicate an unexpected classifier output shape and
+        # should produce a clear warning rather than a cryptic KeyError.
+        _missing_queue_cols = [c for c in _BULK_QUEUE_COLS if c not in queueable_df.columns]
+        if _missing_queue_cols:
+            raise KeyError(f"Expected columns absent from classification output: {', '.join(_missing_queue_cols)}")
         for row in queueable_df[_BULK_QUEUE_COLS].to_dict("records"):
             _add_to_review_queue({
                 "description": _safe_str(row.get("description", "")),
