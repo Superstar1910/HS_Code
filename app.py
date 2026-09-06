@@ -470,6 +470,13 @@ def _safe_str(v) -> str:
         return ""
     if isinstance(v, str):
         return v
+    # Guard array-like types (numpy arrays, pandas arrays) before pd.isna:
+    # pd.isna on an array returns an array whose boolean evaluation raises
+    # ValueError, and newer pandas also emits a DeprecationWarning in that
+    # path.  Calling str() directly on arrays is intentional — _safe_str is
+    # designed for scalar inputs and an array value indicates a caller error.
+    if isinstance(v, np.ndarray):
+        return str(v)
     try:
         if pd.isna(v):
             return ""
@@ -1470,6 +1477,7 @@ elif page == "Bulk Upload":
             data=bulk["csv_bytes"],
             file_name="hs_classification_results.csv",
             mime="text/csv",
+            key="download_bulk_results",
         )
     elif not uploaded:
         st.caption("Use the sample CSV in the deployment bundle to test bulk processing.")
@@ -1603,4 +1611,5 @@ elif page == "Audit Trail":
         data=_audit_csv_bytes,
         file_name="audit_log.csv",
         mime="text/csv",
+        key="download_audit_log",
     )
