@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
+st.set_page_config(page_title="HS & Shipment Pre-Check", page_icon="🛃", layout="wide")
 
 def _make_word_re(*words: str) -> re.Pattern[str]:
     """Return a compiled whole-word alternation regex for the given keywords.
@@ -36,13 +36,17 @@ _ISO_CODES = (
     '|VND|XAF|XOF|ZAR|ZMW'
 )
 # Strips currency symbols (£$€¥₹) and ISO 4217 text codes that appear as a
-# prefix ("GBP 250", "USD1250") or suffix ("250 EUR", "250USD") in value
-# fields exported from ERP/accounting systems.  Start/end anchors are used
-# instead of \b so no-space variants like "USD1250" are handled correctly
+# prefix ("GBP 250", "USD1250", "+GBP 1,000") or suffix ("250 EUR", "250USD")
+# in value fields exported from ERP/accounting systems.  Start/end anchors are
+# used instead of \b so no-space variants like "USD1250" are handled correctly
 # (there is no word boundary between a letter and a digit in \b semantics).
+# The optional leading \+? in the prefix branch handles ERP systems that export
+# positive values with an explicit sign before the currency code ("+GBP 1,000",
+# "+USD1250").  Without it the currency code is not stripped and the subsequent
+# numeric parser returns a "could not be parsed" warning for these values.
 _VALUE_STRIP_RE = re.compile(
     r'[£$€¥₹]'
-    r'|^(?:' + _ISO_CODES + r')\s*'
+    r'|^\+?(?:' + _ISO_CODES + r')\s*'
     r'|\s*(?:' + _ISO_CODES + r')$',
     re.IGNORECASE,
 )
@@ -273,17 +277,20 @@ def _parse_value(raw) -> tuple[float, str]:
     if isinstance(raw, str):
         # Strip currency symbols and ISO 4217 text codes in one pass; strip()
         # afterward removes any whitespace left between the code and the number
-        # (e.g. "GBP 250" → "GBP 250" → sub → " 250" → strip → "250").
+        # (e.g. "GBP 250" → sub → " 250" → strip → "250";
+        #  "+GBP 1,000" → sub → "1,000" via the \+? prefix branch in _VALUE_STRIP_RE).
         s = _VALUE_STRIP_RE.sub('', raw.strip()).strip()
         if not s:
             return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
         if s.startswith('-'):
             return 0.0, " Warning: declared value was negative; defaulted to £0 for risk assessment."
-        # Strip a leading '+' before any structural checks: some ERP systems export
-        # positive values with an explicit '+' sign (e.g. "+1,250,000", "+1.250.000",
-        # "+1.250,00").  float() natively accepts a leading '+', so stripping it here
-        # only affects the isdecimal() and length guards in every branch below — the
-        # final parsed numeric value is identical to the unstripped form.
+        # Strip a residual leading '+' before any structural checks.  ERP systems
+        # that use "+GBP 1,250" format have the '+' removed by _VALUE_STRIP_RE's
+        # \+? prefix branch above; this lstrip handles the remaining case of a
+        # bare signed number (e.g. "+1,250,000", "+1.250.000", "+1.250,00") where
+        # no currency code was present.  float() natively accepts a leading '+',
+        # so stripping it here only affects the isdecimal() and length guards in
+        # every branch below — the final parsed numeric value is identical.
         s = s.lstrip('+')
         # A bare '+' (with no digits) becomes empty after lstrip; treat it as a
         # missing value rather than letting it fall through to float('') and
@@ -836,7 +843,11 @@ def classify_row(row: pd.Series) -> pd.Series:
     # Parse value before the try/except so val is always defined in the except
     # handler — preserving the correct risk rating even when classify_product
     # raises.  _parse_value is designed never to raise; this is purely defensive.
-    val, val_warning = _parse_value(row.get("value"))
+    # Default to 0.0 so _parse_value receives a well-typed sentinel rather than
+    # None when the "value" column is absent from the row (e.g. a partially
+    # structured input), producing the "missing" warning instead of falling
+    # through to pd.isna() inside the generic exception handler.
+    val, val_warning = _parse_value(row.get("value", 0.0))
     try:
         result = classify_product(
             _safe_str(row.get("description", "")),
@@ -1288,7 +1299,7 @@ elif page == "Classify":
                 "may return UNCLASSIFIED for food or confectionery items — select 'food' for edible products."
             ),
         )
-        value = st.number_input("Declared Value (£)", min_value=0.0, value=250.0, step=1.0)
+        value = st.number_input("Declared Value (£)", min_value=0.0, max_value=10_000_000.0, value=250.0, step=1.0)
 
         if st.button("Run Classification"):
             if not description.strip():
@@ -1486,6 +1497,9 @@ elif page == "Review Queue":
         # Editable table: Status column is a dropdown; all other columns are read-only.
         # num_rows="fixed" prevents row deletion/insertion so the zip-based status-sync
         # loop below always compares items[i] against the correct edited row at index i.
+        # Derive the disabled list dynamically so adding a new display column does not
+        # accidentally leave it editable — only "Status" is intentionally writable.
+        _editable_cols = {"Status"}
         edited_df = st.data_editor(
             review_df,
             column_config={
@@ -1500,7 +1514,7 @@ elif page == "Review Queue":
                     required=True,
                 ),
             },
-            disabled=["Product", "Value (£)", "Suggested Code", "Confidence", "Risk", "Explanation"],
+            disabled=[col for col in display_cols if col not in _editable_cols],
             num_rows="fixed",
             hide_index=True,
             use_container_width=True,
