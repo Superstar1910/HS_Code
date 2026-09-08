@@ -180,8 +180,12 @@ _SCARF_TECHNICAL_RE = re.compile(
     # cover all three forms.  The original scarfs? missed "scarves", leaving
     # descriptions like "scarves joint cutter" to be misclassified as HS 6214
     # textile scarves (12% duty) instead of being suppressed.
-    r'\b(?:scarf|scarfs|scarves)\s+(?:joint|joints|weld|welds|cut|cuts|plane|planes|ring|rings)\b'
-    r'|\b(?:joint|weld|cut|plane)\s+(?:scarf|scarfs|scarves)\b'
+    # [-\s]+ (hyphen or whitespace) is used throughout so that hyphenated
+    # engineering forms — "scarf-joint", "joint-scarf", "scarf-weld" — are
+    # suppressed alongside their spaced equivalents.  The shawl alternative
+    # already used [-\s]+; the first two are now consistent with it.
+    r'\b(?:scarf|scarfs|scarves)[-\s]+(?:joint|joints|weld|welds|cut|cuts|plane|planes|ring|rings)\b'
+    r'|\b(?:joint|weld|cut|plane)[-\s]+(?:scarf|scarfs|scarves)\b'
     r'|\bshawl[-\s]+(?:collar|lapel|neckline|neck)\b'
 )
 # Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
@@ -880,7 +884,15 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
             else ""
         )
         st.session_state["audit_log"].append({"Timestamp": ts, "Event": audit_event.format(count=changed) + skipped_note})
-        st.toast(toast_msg.format(count=changed), icon=toast_icon)
+        # Append the skipped count to the toast so users know additional items
+        # remain pending — without it, "3 approved" on a 5-item queue gives no
+        # indication that 2 items were silently left untouched.
+        toast_suffix = (
+            f" ({skipped_unclassified} unclassified/errored item(s) still pending manual assignment)"
+            if skipped_unclassified
+            else ""
+        )
+        st.toast(toast_msg.format(count=changed) + toast_suffix, icon=toast_icon)
         st.session_state["_review_edit_version"] += 1
         st.rerun()
     elif skipped_unclassified:
