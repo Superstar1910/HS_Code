@@ -544,7 +544,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # _GENUINE_LEATHER_RE / _GENUINE_SILK_RE override the faux suppression within a
     # single unseparated segment that mentions both: "genuine leather and faux leather
     # trim" must still be flagged as genuine leather.
-    _mat_segs = list(filter(None, (seg.strip() for seg in _MAT_SEP_RE.split(material_lower)))) if material_lower else []
+    _mat_segs = [seg.strip() for seg in _MAT_SEP_RE.split(material_lower) if seg.strip()] if material_lower else []
     if _mat_segs:
         is_silk = False
         is_leather = False
@@ -1079,9 +1079,12 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         # chunks without reverting to the slower per-row loop.
         chunk_size = max(5, n // 100)
         _row_word = "row" if n == 1 else "rows"
-        _progress = st.progress(0.0, text=f"Classified 0 of {n} {_row_word}…")
+        # Initialise to None so the finally block is always safe even if
+        # st.progress() itself raises before the assignment completes.
+        _progress = None
         _chunks: list[pd.DataFrame] = []
         try:
+            _progress = st.progress(0.0, text=f"Classified 0 of {n} {_row_word}…")
             for _start in range(0, n, chunk_size):
                 _end = min(_start + chunk_size, n)
                 _chunks.append(
@@ -1089,7 +1092,8 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
                 )
                 _progress.progress(_end / n, text=f"Classified {_end} of {n} {_row_word}…")
         finally:
-            _progress.empty()
+            if _progress is not None:
+                _progress.empty()
         # ignore_index=True resets the combined index to 0‥n-1, making the
         # subsequent axis=1 concat with input_df (also 0‥n-1 from reset_index)
         # robust regardless of how each chunk's iloc range was labelled.
@@ -1130,15 +1134,14 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         summary = f"Processed {nrows} {row_word}"
         if detail_parts:
             summary += f" ({', '.join(detail_parts)})"
-        st.session_state["audit_log"].append({
-            "Timestamp": datetime.now().isoformat(timespec="microseconds"),
-            "Event": f"Bulk upload: {summary} from '{filename}'",
-        })
         # Pre-compute the CSV download bytes once at classification time.
         # Streamlit reruns the entire script on every user interaction, so
         # calling result_df.to_csv().encode() inside st.download_button on
         # each render would be O(n) work per keypress — storing it here
         # ensures the encoding is done once per upload, not once per rerun.
+        # NOTE: bulk_result and audit_log are set AFTER to_csv() succeeds so
+        # that a MemoryError or encoding failure leaves neither a stale result
+        # nor a misleading "Processed N rows" audit entry.
         result_csv_bytes = result_df.to_csv(index=False).encode("utf-8-sig")
         st.session_state["bulk_result"] = {
             "df": result_df,
@@ -1149,6 +1152,10 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             "error_count": error_count,
             "unclassified_count": unclassified_count,
         }
+        st.session_state["audit_log"].append({
+            "Timestamp": datetime.now().isoformat(timespec="microseconds"),
+            "Event": f"Bulk upload: {summary} from '{filename}'",
+        })
     except Exception as e:
         st.session_state["_bulk_messages"].append(("error", f"Failed to summarise classification results: {e}"))
         return
