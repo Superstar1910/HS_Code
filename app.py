@@ -483,7 +483,7 @@ def classify_product(
     material: str,
     origin: str,
     category: str,
-    value: float,
+    value: float | str | int,
 ) -> dict:
     """Normalise inputs then delegate to the cached implementation."""
     v = _normalise_value(value)
@@ -544,7 +544,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # _GENUINE_LEATHER_RE / _GENUINE_SILK_RE override the faux suppression within a
     # single unseparated segment that mentions both: "genuine leather and faux leather
     # trim" must still be flagged as genuine leather.
-    _mat_segs = [seg.strip() for seg in _MAT_SEP_RE.split(material_lower) if seg.strip()] if material_lower else []
+    _mat_segs = [s for seg in _MAT_SEP_RE.split(material_lower) if (s := seg.strip())] if material_lower else []
     if _mat_segs:
         is_silk = False
         is_leather = False
