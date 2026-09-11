@@ -130,6 +130,12 @@ _GENUINE_SILK_RE = re.compile(r'\b(?:genuine|real|authentic)[-\s]+silks?\b')
 # Non-leather coin purses (textile/plastic outer) attract 4202.32 instead, but they
 # never reach this branch (is_leather is False for them) and route to elif is_bag.
 _WALLET_RE = re.compile(r'\bwallets?\b|\bcoin[-\s]+purses?\b')
+# Matches gloves and mittens for the HS 4203.20 sub-branch of leather fashion
+# accessories.  "glove"/"gloves" are also in _FASHION_RE; the separate pattern
+# lets the leather-accessories branch distinguish HS 4203.20 (gloves) from
+# HS 4203.29 (other leather accessories such as belts and bandoliers) without
+# repeating the regex inline in the classifier function.
+_GLOVE_RE = re.compile(r'\bgloves?\b|\bmittens?\b|\bmitts?\b')
 _EURO_DECIMAL_RE = re.compile(r',\d{1,2}\Z')
 _PERFUME_RE = re.compile(
     r'\b(?:perfumes?|fragrances?|colognes?|aftershaves?'
@@ -657,13 +663,19 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
         and not is_leather and not is_silk and not is_fashion and not is_scarf
         and not is_perfume
     )
-    # Bag detection: fashion_accessories and food categories override bag keywords.
+    # Bag detection: fashion_accessories, food, and perfume override bag keywords.
     # fashion_accessories: "handbag charm" is an accessory, not a bag.
     # food: "chocolate gift bag" is food, not a handbag — without this guard the
     # is_bag branch fires before is_food and produces an incorrect HS 4202 code.
     # The is_food guard covers both an explicit category="food" and the case where
     # confectionery keywords trigger food with no category (e.g. "chocolate gift bag"
     # with blank category), since is_bag is checked before is_food in the decision tree.
+    # perfume: "perfume gift bag" is a perfume product, not a travel bag — the same
+    # reasoning as the is_food guard applies since elif is_bag fires before elif is_perfume
+    # in the classification chain.  "cologne bag" or "eau de parfum gift bag" should route
+    # to HS 3303 (perfume), not HS 4202.  Explicit bag-shaped perfume containers (e.g.
+    # a perfume bottle in the shape of a bag) are edge-cases that require manual review
+    # regardless, so routing to HS 3303 and flagging for analyst review is the safer default.
     # category="bags" only fires when description keywords do not indicate a fashion
     # accessory, preventing items like belts or scarves from being misrouted to bag
     # HS codes due to a miscategorised or imprecise category field.
@@ -673,7 +685,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # ("belt", "clutch") is also present.  The category path uses the stricter guard
     # (not is_fashion) because category="bags" on an item whose description says only
     # "belt" is likely a data-entry error; the description is the authoritative signal.
-    _bag_by_keyword = _bag_keyword and category_lower != "fashion_accessories" and not is_food
+    _bag_by_keyword = _bag_keyword and category_lower != "fashion_accessories" and not is_food and not is_perfume
     _bag_by_category = category_lower == "bags" and not is_fashion and not is_scarf and not is_food
     is_bag = _bag_by_keyword or _bag_by_category
 
@@ -796,6 +808,36 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
                 "Classified under miscellaneous food preparations; phytosanitary and food safety checks required."
                 + vat_note + hv_note
             ),
+        })
+    elif is_fashion and is_leather and not is_food:
+        # Clothing accessories of genuine or composition leather fall under HS 4203,
+        # not under HS 6217 (textile clothing accessories).  Routing leather belts,
+        # gloves, brooches, and headbands to HS 6217 is a ~8 pp duty error (12% vs 3.7%).
+        # This branch fires only when is_bag is False (all is_bag arms precede it in the
+        # elif chain), so it covers non-bag leather accessories only.
+        # Gloves and mittens are HS 4203.20; all other leather clothing accessories
+        # (belts, bandoliers, hatbands, etc.) are HS 4203.29.
+        # is_food is redundant here (is_food is checked before is_fashion in the chain)
+        # but is kept for defensive clarity against future reordering.
+        _is_glove = bool(_GLOVE_RE.search(desc))
+        if _is_glove:
+            return types.MappingProxyType({
+                "hs6": "420320",
+                "uk_code": "4203200000",
+                "confidence": 0.78,
+                "risk": RISK_RED if high_value else RISK_GREEN,
+                "duty": "3.7%",
+                "vat": "20%",
+                "explanation": "Classified under clothing accessories of leather — gloves and mittens (HS 4203.20); verify outer surface is genuine or composition leather." + hv_note,
+            })
+        return types.MappingProxyType({
+            "hs6": "420329",
+            "uk_code": "4203290000",
+            "confidence": 0.75,
+            "risk": RISK_RED if high_value else RISK_GREEN,
+            "duty": "3.7%",
+            "vat": "20%",
+            "explanation": "Classified under clothing accessories of leather (HS 4203.29) — belts, bandoliers and similar; verify outer surface is genuine or composition leather." + hv_note,
         })
     elif is_fashion and not is_food:
         # is_food always takes precedence over is_fashion (e.g. category="food" on a
