@@ -68,6 +68,11 @@ _CONFECTIONERY_RE = _make_word_re(
 )
 _FASHION_RE = _make_word_re(
     "belt", "belts", "glove", "gloves",
+    # mitten/mitt are included so that "leather mittens" and "leather mitts" trigger
+    # is_fashion=True and reach the is_fashion and is_leather branch (→ HS 4203.20).
+    # Without these, _FASHION_RE would not match and the product would fall to
+    # UNCLASSIFIED when the category is blank or "other".
+    "mitten", "mittens", "mitt", "mitts",
     "hat", "hats", "brooch", "brooches", "headband", "headbands",
 )
 _BAG_RE = _make_word_re(
@@ -283,7 +288,13 @@ def _parse_value(raw) -> tuple[float, str]:
         s = _VALUE_STRIP_RE.sub('', raw.strip()).strip()
         if not s:
             return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
-        if s.startswith('-'):
+        # U+002D (ASCII hyphen-minus) is the common case; also catch U+2212
+        # (Unicode MINUS SIGN) and U+2013 (EN DASH), both used by some ERP and
+        # spreadsheet exports for negative currency values.  Without these,
+        # "−1250" or "–1250" would fall through to float() which raises ValueError,
+        # producing the generic "could not be parsed" warning rather than the
+        # more informative "negative value" warning.
+        if s[:1] in ('-', '−', '–'):
             return 0.0, " Warning: declared value was negative; defaulted to £0 for risk assessment."
         # Strip a leading '+' before any structural checks: some ERP systems export
         # positive values with an explicit '+' sign (e.g. "+1,250,000", "+1.250.000",
@@ -686,7 +697,11 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # (not is_fashion) because category="bags" on an item whose description says only
     # "belt" is likely a data-entry error; the description is the authoritative signal.
     _bag_by_keyword = _bag_keyword and category_lower != "fashion_accessories" and not is_food and not is_perfume
-    _bag_by_category = category_lower == "bags" and not is_fashion and not is_scarf and not is_food
+    # `not is_perfume` mirrors the same guard added to _bag_by_keyword: a product
+    # with category="bags" but a clear perfume description (e.g. a data-entry error
+    # where someone used "bags" for a "cologne gift set") should route to HS 3303,
+    # not HS 4202, since elif is_bag fires before elif is_perfume in the chain.
+    _bag_by_category = category_lower == "bags" and not is_fashion and not is_scarf and not is_food and not is_perfume
     is_bag = _bag_by_keyword or _bag_by_category
 
     # Scarf detection: food category overrides scarf keywords for consistency with the
@@ -698,7 +713,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # and the scarf word is a modifier.  Without this guard the scarf branch fires
     # first (it precedes is_bag in the elif chain) and misclassifies the item as
     # HS 621410 (silk scarf, 8% duty) instead of HS 4202 (travel goods/bags).
-    if is_scarf and is_silk and not is_bag and not is_food:
+    if is_scarf and is_silk and not is_bag and not is_food and not is_perfume:
         return types.MappingProxyType({
             "hs6": "621410",
             "uk_code": "6214100090",
@@ -742,11 +757,15 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "vat": "20%",
             "explanation": "Classified under travel goods, handbags and similar containers (HS 4202); verify material composition for precise subheading — leather surface attracts 4202.21/4202.31 (16% duty)." + hv_note,
         })
-    elif is_scarf and not is_bag and not is_food:
+    elif is_scarf and not is_bag and not is_food and not is_perfume:
         # Explicit `not is_bag` guard mirrors the silk-scarf branch above.
         # Although the preceding `elif is_bag` arms already prevent this branch
         # from being reached when is_bag is True, the guard is stated explicitly
         # so the intent is self-evident and future chain reordering is safe.
+        # `not is_perfume` mirrors the same guard on the silk-scarf branch: a
+        # description like "cashmere shawl fragrance" or "silk scarf cologne" that
+        # triggers both is_scarf and is_perfume should route to HS 3303 (perfume),
+        # not HS 6214 (scarves), because is_scarf fires before is_perfume in the chain.
         return types.MappingProxyType({
             "hs6": "621490",
             "uk_code": "6214900000",
