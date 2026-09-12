@@ -238,6 +238,18 @@ UNCLASSIFIED_CODE = "UNCLASSIFIED"
 _BULK_QUEUE_COLS = ("description", "value", "uk_code", "confidence", "explanation", "risk")
 _BULK_QUEUE_COLS_LIST: list[str] = list(_BULK_QUEUE_COLS)
 
+# Columns displayed in the Review Queue data_editor, in presentation order.
+# Defined at module level so Streamlit does not rebuild the list on every rerun
+# (which fires on every user interaction in the web UI).
+_REVIEW_DISPLAY_COLS: list[str] = [
+    "Product", "Value (£)", "Suggested Code", "Confidence", "Risk", "Status", "Explanation"
+]
+# Subset of _REVIEW_DISPLAY_COLS that are read-only in the data_editor.
+# "Status" is intentionally excluded — it is the one editable column.
+_REVIEW_DISABLED_COLS: list[str] = [
+    "Product", "Value (£)", "Suggested Code", "Confidence", "Risk", "Explanation"
+]
+
 # Maximum number of distinct (desc, material, category, high_value) tuples held in
 # the classification cache.  Origin is excluded from the key because classification
 # logic is identical regardless of origin — only the explanation note differs, and
@@ -327,10 +339,9 @@ def _parse_value(raw) -> tuple[float, str]:
             _last_dot = _mparts[-1].find('.')
             _last_base = _mparts[-1][:_last_dot] if _last_dot != -1 else _mparts[-1]
             _last_dec = _mparts[-1][_last_dot + 1:] if _last_dot != -1 else ''
-            # The leading '+' was already stripped from s above; lstrip('+') here
-            # is a no-op and is kept only as a belt-and-suspenders guard so that
-            # this branch remains self-contained if the call site ever changes.
-            _mparts0 = _mparts[0].lstrip('+')
+            # The leading '+' was already stripped from s above, so _mparts[0]
+            # never starts with '+' at this point.
+            _mparts0 = _mparts[0]
             if (
                 _mparts0.isdecimal()
                 and 1 <= len(_mparts0) <= 3
@@ -561,7 +572,14 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # _GENUINE_LEATHER_RE / _GENUINE_SILK_RE override the faux suppression within a
     # single unseparated segment that mentions both: "genuine leather and faux leather
     # trim" must still be flagged as genuine leather.
-    _mat_segs = [s for seg in _MAT_SEP_RE.split(material_lower) if (s := seg.strip())] if material_lower else []
+    # filter(None, ...) discards empty strings after stripping; using a generator
+    # avoids the walrus-operator scope leak that [s for ... if (s := ...)] produces
+    # in Python 3.8–3.11 where walrus targets in comprehensions escape to the
+    # enclosing function scope.
+    _mat_segs = (
+        list(filter(None, (seg.strip() for seg in _MAT_SEP_RE.split(material_lower))))
+        if material_lower else []
+    )
     if _mat_segs:
         is_silk = False
         is_leather = False
@@ -1548,8 +1566,7 @@ elif page == "Review Queue":
     items = st.session_state["review_items"]
 
     if items:
-        display_cols = ["Product", "Value (£)", "Suggested Code", "Confidence", "Risk", "Status", "Explanation"]
-        review_df = pd.DataFrame(items, columns=display_cols)
+        review_df = pd.DataFrame(items, columns=_REVIEW_DISPLAY_COLS)
 
         # Editable table: Status column is a dropdown; all other columns are read-only.
         # num_rows="fixed" prevents row deletion/insertion so the zip-based status-sync
@@ -1568,7 +1585,7 @@ elif page == "Review Queue":
                     required=True,
                 ),
             },
-            disabled=["Product", "Value (£)", "Suggested Code", "Confidence", "Risk", "Explanation"],
+            disabled=_REVIEW_DISABLED_COLS,
             num_rows="fixed",
             hide_index=True,
             use_container_width=True,
