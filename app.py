@@ -377,6 +377,11 @@ def _parse_value(raw) -> tuple[float, str]:
                 if not (
                     int_segs[0].isdecimal()
                     and 1 <= len(int_segs[0]) <= 3
+                    # Mirror the multi-dot branch guard: "0.250,99" is not a valid
+                    # European thousands+decimal format (a leading-zero thousands group
+                    # is never emitted by any standard ERP) and must be flagged as
+                    # ambiguous rather than silently parsed as 250.99.
+                    and int(int_segs[0]) != 0
                     and all(len(p) == 3 and p.isdecimal() for p in int_segs[1:])
                 ):
                     return 0.0, " Warning: declared value format is ambiguous (non-standard European notation); defaulted to £0 for risk assessment."
@@ -713,7 +718,13 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # and the scarf word is a modifier.  Without this guard the scarf branch fires
     # first (it precedes is_bag in the elif chain) and misclassifies the item as
     # HS 621410 (silk scarf, 8% duty) instead of HS 4202 (travel goods/bags).
-    if is_scarf and is_silk and not is_bag and not is_food and not is_perfume:
+    # `not is_cosmetics` mirrors the `not is_food` and `not is_perfume` guards:
+    # category="beauty" (which sets is_cosmetics=True) must always win over a keyword
+    # hit on "scarf"/"shawl" in the description — e.g. "silk scarf beauty gift" with
+    # category="beauty" is a cosmetics product (HS 3304), not a textile scarf (HS 6214).
+    # Without this guard the scarf branch fires before the is_cosmetics branch in the
+    # elif chain, producing a ~1.5 pp duty error (8% vs 6.5%) and the wrong code.
+    if is_scarf and is_silk and not is_bag and not is_food and not is_perfume and not is_cosmetics:
         return types.MappingProxyType({
             "hs6": "621410",
             "uk_code": "6214100090",
@@ -757,7 +768,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "vat": "20%",
             "explanation": "Classified under travel goods, handbags and similar containers (HS 4202); verify material composition for precise subheading — leather surface attracts 4202.21/4202.31 (16% duty)." + hv_note,
         })
-    elif is_scarf and not is_bag and not is_food and not is_perfume:
+    elif is_scarf and not is_bag and not is_food and not is_perfume and not is_cosmetics:
         # Explicit `not is_bag` guard mirrors the silk-scarf branch above.
         # Although the preceding `elif is_bag` arms already prevent this branch
         # from being reached when is_bag is True, the guard is stated explicitly
@@ -766,6 +777,8 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
         # description like "cashmere shawl fragrance" or "silk scarf cologne" that
         # triggers both is_scarf and is_perfume should route to HS 3303 (perfume),
         # not HS 6214 (scarves), because is_scarf fires before is_perfume in the chain.
+        # `not is_cosmetics` mirrors the same pattern: category="beauty" must win
+        # over a scarf keyword — see the comment on the silk-scarf branch above.
         return types.MappingProxyType({
             "hs6": "621490",
             "uk_code": "6214900000",
@@ -1113,7 +1126,9 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     # numeric dtype (all-digit category values, e.g. "1", "2") even with
     # keep_default_na=False; for typical string-valued columns it is a no-op.
     _cat_values = df["category"].astype(str).str.strip().str.lower()
-    _unknown_cats = sorted(set(_cat_values.unique()) - _VALID_CATEGORIES)
+    # set() deduplicates in a single O(n) pass; calling .unique() first would
+    # allocate an intermediate numpy array for a second O(k) dedup that is redundant.
+    _unknown_cats = sorted(set(_cat_values) - _VALID_CATEGORIES)
     if _unknown_cats:
         _unknown_sample = ", ".join(repr(c) for c in _unknown_cats[:5])
         _more = f" … and {len(_unknown_cats) - 5} more" if len(_unknown_cats) > 5 else ""
@@ -1595,23 +1610,34 @@ elif page == "Review Queue":
         # Detect per-row status changes: iterate once, track whether anything changed,
         # then rerun only if needed.  A single O(n) pass avoids the previous approach
         # of a separate O(n) list comparison followed by a second O(n) zip iteration.
+        # Guard against a length mismatch between review_df (built from items) and the
+        # editor output: num_rows="fixed" prevents the user from inserting or deleting
+        # rows, but a Streamlit serialisation edge case could theoretically produce a
+        # shorter edited_df.  A silent zip truncation would silently lose status changes
+        # for any item beyond the shorter length — detect and report it instead.
         changed = False
         ts = None
-        for i, (orig_status, new_status) in enumerate(
-            zip(review_df["Status"], edited_df["Status"])
-        ):
-            if orig_status != new_status:
-                if ts is None:
-                    ts = datetime.now().isoformat(timespec="microseconds")
-                items[i]["Status"] = new_status
-                st.session_state["audit_log"].append({
-                    "Timestamp": ts,
-                    "Event": (
-                        f"Review Queue: '{items[i]['Product']}' "
-                        f"status changed from {orig_status} to {new_status}"
-                    ),
-                })
-                changed = True
+        if len(edited_df) != len(review_df):
+            st.error(
+                "Unexpected row-count mismatch between the review table and the editor output "
+                f"({len(review_df)} vs {len(edited_df)}) — please reload the page to resync."
+            )
+        else:
+            for i, (orig_status, new_status) in enumerate(
+                zip(review_df["Status"], edited_df["Status"])
+            ):
+                if orig_status != new_status:
+                    if ts is None:
+                        ts = datetime.now().isoformat(timespec="microseconds")
+                    items[i]["Status"] = new_status
+                    st.session_state["audit_log"].append({
+                        "Timestamp": ts,
+                        "Event": (
+                            f"Review Queue: '{items[i]['Product']}' "
+                            f"status changed from {orig_status} to {new_status}"
+                        ),
+                    })
+                    changed = True
         if changed:
             st.session_state["_review_edit_version"] += 1
             st.rerun()
