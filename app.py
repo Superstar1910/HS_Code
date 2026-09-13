@@ -210,7 +210,7 @@ _LEATHER_RE = re.compile(r'\bleathers?\b(?![-\s]+(?:look|like|effect|feel|finish
 _MAT_SEP_RE = re.compile(r'[,;]')
 
 # Threshold at or above which items attract additional customs scrutiny
-HIGH_VALUE_THRESHOLD = 1000.00
+HIGH_VALUE_THRESHOLD = 1000.0
 
 # Valid risk levels
 RISK_GREEN = "GREEN"
@@ -1163,7 +1163,14 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         # prevents a cryptic ValueError from pd.concat([]) in case that
         # invariant is ever broken by future refactoring.
         if not _chunks:
-            st.session_state["_bulk_messages"].append(("error", "Classification produced no output rows — the input DataFrame may be empty."))
+            # This path should be unreachable given the df.empty guard above, but
+            # is kept as a belt-and-suspenders guard so future refactoring cannot
+            # accidentally produce a silent empty-concat failure.
+            st.session_state["_bulk_messages"].append(("error", (
+                "Classification produced no output rows — the input DataFrame "
+                "appears to be empty after pre-processing. "
+                "Check that the uploaded file has at least one data row."
+            )))
             return
         classified = pd.concat(_chunks, ignore_index=True)
         result_df = pd.concat([input_df, classified], axis=1)
@@ -1548,6 +1555,16 @@ elif page == "Review Queue":
     items = st.session_state["review_items"]
 
     if items:
+        # Single-pass counters for the summary bar shown above the editor.
+        _rq_status: Counter = Counter(item["Status"] for item in items)
+        _rq_risk: Counter = Counter(item["Risk"] for item in items)
+        _rq_cols = st.columns(5)
+        _rq_cols[0].metric("Total", len(items))
+        _rq_cols[1].metric("Pending", _rq_status[STATUS_PENDING])
+        _rq_cols[2].metric("Approved", _rq_status[STATUS_APPROVED])
+        _rq_cols[3].metric("Overridden", _rq_status[STATUS_OVERRIDDEN])
+        _rq_cols[4].metric("🔴 High-Risk", _rq_risk[RISK_RED])
+
         display_cols = ["Product", "Value (£)", "Suggested Code", "Confidence", "Risk", "Status", "Explanation"]
         review_df = pd.DataFrame(items, columns=display_cols)
 
