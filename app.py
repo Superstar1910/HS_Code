@@ -72,6 +72,11 @@ _CONFECTIONERY_RE = _make_word_re(
 )
 _FASHION_RE = _make_word_re(
     "belt", "belts", "glove", "gloves",
+    # mitten/mitt are included so that "leather mittens" and "leather mitts" trigger
+    # is_fashion=True and reach the is_fashion and is_leather branch (→ HS 4203.20).
+    # Without these, _FASHION_RE would not match and the product would fall to
+    # UNCLASSIFIED when the category is blank or "other".
+    "mitten", "mittens", "mitt", "mitts",
     "hat", "hats", "brooch", "brooches", "headband", "headbands",
 )
 _BAG_RE = _make_word_re(
@@ -134,6 +139,12 @@ _GENUINE_SILK_RE = re.compile(r'\b(?:genuine|real|authentic)[-\s]+silks?\b')
 # Non-leather coin purses (textile/plastic outer) attract 4202.32 instead, but they
 # never reach this branch (is_leather is False for them) and route to elif is_bag.
 _WALLET_RE = re.compile(r'\bwallets?\b|\bcoin[-\s]+purses?\b')
+# Matches gloves and mittens for the HS 4203.20 sub-branch of leather fashion
+# accessories.  "glove"/"gloves" are also in _FASHION_RE; the separate pattern
+# lets the leather-accessories branch distinguish HS 4203.20 (gloves) from
+# HS 4203.29 (other leather accessories such as belts and bandoliers) without
+# repeating the regex inline in the classifier function.
+_GLOVE_RE = re.compile(r'\bgloves?\b|\bmittens?\b|\bmitts?\b')
 _EURO_DECIMAL_RE = re.compile(r',\d{1,2}\Z')
 _PERFUME_RE = re.compile(
     r'\b(?:perfumes?|fragrances?|colognes?|aftershaves?'
@@ -203,7 +214,7 @@ _LEATHER_RE = re.compile(r'\bleathers?\b(?![-\s]+(?:look|like|effect|feel|finish
 _MAT_SEP_RE = re.compile(r'[,;]')
 
 # Threshold at or above which items attract additional customs scrutiny
-HIGH_VALUE_THRESHOLD = 1000.00
+HIGH_VALUE_THRESHOLD = 1000.0
 
 # Valid risk levels
 RISK_GREEN = "GREEN"
@@ -282,7 +293,13 @@ def _parse_value(raw) -> tuple[float, str]:
         s = _VALUE_STRIP_RE.sub('', raw.strip()).strip()
         if not s:
             return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
-        if s.startswith('-'):
+        # U+002D (ASCII hyphen-minus) is the common case; also catch U+2212
+        # (Unicode MINUS SIGN) and U+2013 (EN DASH), both used by some ERP and
+        # spreadsheet exports for negative currency values.  Without these,
+        # "−1250" or "–1250" would fall through to float() which raises ValueError,
+        # producing the generic "could not be parsed" warning rather than the
+        # more informative "negative value" warning.
+        if s[:1] in ('-', '−', '–'):
             return 0.0, " Warning: declared value was negative; defaulted to £0 for risk assessment."
         # Strip a residual leading '+' before any structural checks.  ERP systems
         # that use "+GBP 1,250" format have the '+' removed by _VALUE_STRIP_RE's
@@ -367,6 +384,11 @@ def _parse_value(raw) -> tuple[float, str]:
                 if not (
                     int_segs[0].isdecimal()
                     and 1 <= len(int_segs[0]) <= 3
+                    # Mirror the multi-dot branch guard: "0.250,99" is not a valid
+                    # European thousands+decimal format (a leading-zero thousands group
+                    # is never emitted by any standard ERP) and must be flagged as
+                    # ambiguous rather than silently parsed as 250.99.
+                    and int(int_segs[0]) != 0
                     and all(len(p) == 3 and p.isdecimal() for p in int_segs[1:])
                 ):
                     return 0.0, " Warning: declared value format is ambiguous (non-standard European notation); defaulted to £0 for risk assessment."
@@ -490,7 +512,7 @@ def classify_product(
     material: str,
     origin: str,
     category: str,
-    value: float,
+    value: float | str | int,
 ) -> dict:
     """Normalise inputs then delegate to the cached implementation."""
     v = _normalise_value(value)
@@ -664,13 +686,19 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
         and not is_leather and not is_silk and not is_fashion and not is_scarf
         and not is_perfume
     )
-    # Bag detection: fashion_accessories and food categories override bag keywords.
+    # Bag detection: fashion_accessories, food, and perfume override bag keywords.
     # fashion_accessories: "handbag charm" is an accessory, not a bag.
     # food: "chocolate gift bag" is food, not a handbag — without this guard the
     # is_bag branch fires before is_food and produces an incorrect HS 4202 code.
     # The is_food guard covers both an explicit category="food" and the case where
     # confectionery keywords trigger food with no category (e.g. "chocolate gift bag"
     # with blank category), since is_bag is checked before is_food in the decision tree.
+    # perfume: "perfume gift bag" is a perfume product, not a travel bag — the same
+    # reasoning as the is_food guard applies since elif is_bag fires before elif is_perfume
+    # in the classification chain.  "cologne bag" or "eau de parfum gift bag" should route
+    # to HS 3303 (perfume), not HS 4202.  Explicit bag-shaped perfume containers (e.g.
+    # a perfume bottle in the shape of a bag) are edge-cases that require manual review
+    # regardless, so routing to HS 3303 and flagging for analyst review is the safer default.
     # category="bags" only fires when description keywords do not indicate a fashion
     # accessory, preventing items like belts or scarves from being misrouted to bag
     # HS codes due to a miscategorised or imprecise category field.
@@ -680,8 +708,12 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # ("belt", "clutch") is also present.  The category path uses the stricter guard
     # (not is_fashion) because category="bags" on an item whose description says only
     # "belt" is likely a data-entry error; the description is the authoritative signal.
-    _bag_by_keyword = _bag_keyword and category_lower != "fashion_accessories" and not is_food
-    _bag_by_category = category_lower == "bags" and not is_fashion and not is_scarf and not is_food
+    _bag_by_keyword = _bag_keyword and category_lower != "fashion_accessories" and not is_food and not is_perfume
+    # `not is_perfume` mirrors the same guard added to _bag_by_keyword: a product
+    # with category="bags" but a clear perfume description (e.g. a data-entry error
+    # where someone used "bags" for a "cologne gift set") should route to HS 3303,
+    # not HS 4202, since elif is_bag fires before elif is_perfume in the chain.
+    _bag_by_category = category_lower == "bags" and not is_fashion and not is_scarf and not is_food and not is_perfume
     is_bag = _bag_by_keyword or _bag_by_category
 
     # Scarf detection: food category overrides scarf keywords for consistency with the
@@ -693,7 +725,13 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # and the scarf word is a modifier.  Without this guard the scarf branch fires
     # first (it precedes is_bag in the elif chain) and misclassifies the item as
     # HS 621410 (silk scarf, 8% duty) instead of HS 4202 (travel goods/bags).
-    if is_scarf and is_silk and not is_bag and not is_food:
+    # `not is_cosmetics` mirrors the `not is_food` and `not is_perfume` guards:
+    # category="beauty" (which sets is_cosmetics=True) must always win over a keyword
+    # hit on "scarf"/"shawl" in the description — e.g. "silk scarf beauty gift" with
+    # category="beauty" is a cosmetics product (HS 3304), not a textile scarf (HS 6214).
+    # Without this guard the scarf branch fires before the is_cosmetics branch in the
+    # elif chain, producing a ~1.5 pp duty error (8% vs 6.5%) and the wrong code.
+    if is_scarf and is_silk and not is_bag and not is_food and not is_perfume and not is_cosmetics:
         return types.MappingProxyType({
             "hs6": "621410",
             "uk_code": "6214100090",
@@ -737,11 +775,17 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "vat": "20%",
             "explanation": "Classified under travel goods, handbags and similar containers (HS 4202); verify material composition for precise subheading — leather surface attracts 4202.21/4202.31 (16% duty)." + hv_note,
         })
-    elif is_scarf and not is_bag and not is_food:
+    elif is_scarf and not is_bag and not is_food and not is_perfume and not is_cosmetics:
         # Explicit `not is_bag` guard mirrors the silk-scarf branch above.
         # Although the preceding `elif is_bag` arms already prevent this branch
         # from being reached when is_bag is True, the guard is stated explicitly
         # so the intent is self-evident and future chain reordering is safe.
+        # `not is_perfume` mirrors the same guard on the silk-scarf branch: a
+        # description like "cashmere shawl fragrance" or "silk scarf cologne" that
+        # triggers both is_scarf and is_perfume should route to HS 3303 (perfume),
+        # not HS 6214 (scarves), because is_scarf fires before is_perfume in the chain.
+        # `not is_cosmetics` mirrors the same pattern: category="beauty" must win
+        # over a scarf keyword — see the comment on the silk-scarf branch above.
         return types.MappingProxyType({
             "hs6": "621490",
             "uk_code": "6214900000",
@@ -803,6 +847,36 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
                 "Classified under miscellaneous food preparations; phytosanitary and food safety checks required."
                 + vat_note + hv_note
             ),
+        })
+    elif is_fashion and is_leather and not is_food:
+        # Clothing accessories of genuine or composition leather fall under HS 4203,
+        # not under HS 6217 (textile clothing accessories).  Routing leather belts,
+        # gloves, brooches, and headbands to HS 6217 is a ~8 pp duty error (12% vs 3.7%).
+        # This branch fires only when is_bag is False (all is_bag arms precede it in the
+        # elif chain), so it covers non-bag leather accessories only.
+        # Gloves and mittens are HS 4203.20; all other leather clothing accessories
+        # (belts, bandoliers, hatbands, etc.) are HS 4203.29.
+        # is_food is redundant here (is_food is checked before is_fashion in the chain)
+        # but is kept for defensive clarity against future reordering.
+        _is_glove = bool(_GLOVE_RE.search(desc))
+        if _is_glove:
+            return types.MappingProxyType({
+                "hs6": "420320",
+                "uk_code": "4203200000",
+                "confidence": 0.78,
+                "risk": RISK_RED if high_value else RISK_GREEN,
+                "duty": "3.7%",
+                "vat": "20%",
+                "explanation": "Classified under clothing accessories of leather — gloves and mittens (HS 4203.20); verify outer surface is genuine or composition leather." + hv_note,
+            })
+        return types.MappingProxyType({
+            "hs6": "420329",
+            "uk_code": "4203290000",
+            "confidence": 0.75,
+            "risk": RISK_RED if high_value else RISK_GREEN,
+            "duty": "3.7%",
+            "vat": "20%",
+            "explanation": "Classified under clothing accessories of leather (HS 4203.29) — belts, bandoliers and similar; verify outer surface is genuine or composition leather." + hv_note,
         })
     elif is_fashion and not is_food:
         # is_food always takes precedence over is_fashion (e.g. category="food" on a
@@ -1063,7 +1137,9 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     # numeric dtype (all-digit category values, e.g. "1", "2") even with
     # keep_default_na=False; for typical string-valued columns it is a no-op.
     _cat_values = df["category"].astype(str).str.strip().str.lower()
-    _unknown_cats = sorted(set(_cat_values.unique()) - _VALID_CATEGORIES)
+    # set() deduplicates in a single O(n) pass; calling .unique() first would
+    # allocate an intermediate numpy array for a second O(k) dedup that is redundant.
+    _unknown_cats = sorted(set(_cat_values) - _VALID_CATEGORIES)
     if _unknown_cats:
         _unknown_sample = ", ".join(repr(c) for c in _unknown_cats[:5])
         _more = f" … and {len(_unknown_cats) - 5} more" if len(_unknown_cats) > 5 else ""
@@ -1090,9 +1166,12 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         # chunks without reverting to the slower per-row loop.
         chunk_size = max(5, n // 100)
         _row_word = "row" if n == 1 else "rows"
-        _progress = st.progress(0.0, text=f"Classified 0 of {n} {_row_word}…")
+        # Initialise to None so the finally block is always safe even if
+        # st.progress() itself raises before the assignment completes.
+        _progress = None
         _chunks: list[pd.DataFrame] = []
         try:
+            _progress = st.progress(0.0, text=f"Classified 0 of {n} {_row_word}…")
             for _start in range(0, n, chunk_size):
                 _end = min(_start + chunk_size, n)
                 _chunks.append(
@@ -1100,7 +1179,8 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
                 )
                 _progress.progress(_end / n, text=f"Classified {_end} of {n} {_row_word}…")
         finally:
-            _progress.empty()
+            if _progress is not None:
+                _progress.empty()
         # ignore_index=True resets the combined index to 0‥n-1, making the
         # subsequent axis=1 concat with input_df (also 0‥n-1 from reset_index)
         # robust regardless of how each chunk's iloc range was labelled.
@@ -1109,7 +1189,14 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         # prevents a cryptic ValueError from pd.concat([]) in case that
         # invariant is ever broken by future refactoring.
         if not _chunks:
-            st.session_state["_bulk_messages"].append(("error", "Classification produced no output rows — the input DataFrame may be empty."))
+            # This path should be unreachable given the df.empty guard above, but
+            # is kept as a belt-and-suspenders guard so future refactoring cannot
+            # accidentally produce a silent empty-concat failure.
+            st.session_state["_bulk_messages"].append(("error", (
+                "Classification produced no output rows — the input DataFrame "
+                "appears to be empty after pre-processing. "
+                "Check that the uploaded file has at least one data row."
+            )))
             return
         classified = pd.concat(_chunks, ignore_index=True)
         result_df = pd.concat([input_df, classified], axis=1)
@@ -1141,15 +1228,14 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         summary = f"Processed {nrows} {row_word}"
         if detail_parts:
             summary += f" ({', '.join(detail_parts)})"
-        st.session_state["audit_log"].append({
-            "Timestamp": datetime.now().isoformat(timespec="microseconds"),
-            "Event": f"Bulk upload: {summary} from '{filename}'",
-        })
         # Pre-compute the CSV download bytes once at classification time.
         # Streamlit reruns the entire script on every user interaction, so
         # calling result_df.to_csv().encode() inside st.download_button on
         # each render would be O(n) work per keypress — storing it here
         # ensures the encoding is done once per upload, not once per rerun.
+        # NOTE: bulk_result and audit_log are set AFTER to_csv() succeeds so
+        # that a MemoryError or encoding failure leaves neither a stale result
+        # nor a misleading "Processed N rows" audit entry.
         result_csv_bytes = result_df.to_csv(index=False).encode("utf-8-sig")
         st.session_state["bulk_result"] = {
             "df": result_df,
@@ -1160,6 +1246,10 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             "error_count": error_count,
             "unclassified_count": unclassified_count,
         }
+        st.session_state["audit_log"].append({
+            "Timestamp": datetime.now().isoformat(timespec="microseconds"),
+            "Event": f"Bulk upload: {summary} from '{filename}'",
+        })
     except Exception as e:
         st.session_state["_bulk_messages"].append(("error", f"Failed to summarise classification results: {e}"))
         return
@@ -1491,6 +1581,16 @@ elif page == "Review Queue":
     items = st.session_state["review_items"]
 
     if items:
+        # Single-pass counters for the summary bar shown above the editor.
+        _rq_status: Counter = Counter(item["Status"] for item in items)
+        _rq_risk: Counter = Counter(item["Risk"] for item in items)
+        _rq_cols = st.columns(5)
+        _rq_cols[0].metric("Total", len(items))
+        _rq_cols[1].metric("Pending", _rq_status[STATUS_PENDING])
+        _rq_cols[2].metric("Approved", _rq_status[STATUS_APPROVED])
+        _rq_cols[3].metric("Overridden", _rq_status[STATUS_OVERRIDDEN])
+        _rq_cols[4].metric("🔴 High-Risk", _rq_risk[RISK_RED])
+
         display_cols = ["Product", "Value (£)", "Suggested Code", "Confidence", "Risk", "Status", "Explanation"]
         review_df = pd.DataFrame(items, columns=display_cols)
 
@@ -1524,23 +1624,34 @@ elif page == "Review Queue":
         # Detect per-row status changes: iterate once, track whether anything changed,
         # then rerun only if needed.  A single O(n) pass avoids the previous approach
         # of a separate O(n) list comparison followed by a second O(n) zip iteration.
+        # Guard against a length mismatch between review_df (built from items) and the
+        # editor output: num_rows="fixed" prevents the user from inserting or deleting
+        # rows, but a Streamlit serialisation edge case could theoretically produce a
+        # shorter edited_df.  A silent zip truncation would silently lose status changes
+        # for any item beyond the shorter length — detect and report it instead.
         changed = False
         ts = None
-        for i, (orig_status, new_status) in enumerate(
-            zip(review_df["Status"], edited_df["Status"])
-        ):
-            if orig_status != new_status:
-                if ts is None:
-                    ts = datetime.now().isoformat(timespec="microseconds")
-                items[i]["Status"] = new_status
-                st.session_state["audit_log"].append({
-                    "Timestamp": ts,
-                    "Event": (
-                        f"Review Queue: '{items[i]['Product']}' "
-                        f"status changed from {orig_status} to {new_status}"
-                    ),
-                })
-                changed = True
+        if len(edited_df) != len(review_df):
+            st.error(
+                "Unexpected row-count mismatch between the review table and the editor output "
+                f"({len(review_df)} vs {len(edited_df)}) — please reload the page to resync."
+            )
+        else:
+            for i, (orig_status, new_status) in enumerate(
+                zip(review_df["Status"], edited_df["Status"])
+            ):
+                if orig_status != new_status:
+                    if ts is None:
+                        ts = datetime.now().isoformat(timespec="microseconds")
+                    items[i]["Status"] = new_status
+                    st.session_state["audit_log"].append({
+                        "Timestamp": ts,
+                        "Event": (
+                            f"Review Queue: '{items[i]['Product']}' "
+                            f"status changed from {orig_status} to {new_status}"
+                        ),
+                    })
+                    changed = True
         if changed:
             st.session_state["_review_edit_version"] += 1
             st.rerun()
