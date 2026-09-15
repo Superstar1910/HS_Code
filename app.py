@@ -119,7 +119,7 @@ _FAUX_SILK_RE = re.compile(
     r'|\bman[-\s]?made[-\s]+silks?\b'
 )
 _FAUX_LEATHER_RE = re.compile(
-    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane|eco|bonded)[-\s]+leathers?\b'
+    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane|eco|bonded|recycled)[-\s]+leathers?\b'
 )
 # Explicit "genuine / real / authentic" qualifiers in the same material segment
 # override a co-present faux marker.  This handles supplier material strings that
@@ -1079,14 +1079,15 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             low_memory=False,
         )
         df.columns = df.columns.str.strip().str.lower()
-        # Warn if any cell contains U+FFFD (the Unicode replacement character),
-        # which indicates bytes that could not be decoded from the file's encoding.
-        # Generator short-circuits on the first matching column instead of scanning
-        # all columns then discarding the intermediate boolean Series.
-        str_cols = df.select_dtypes(include=["object", "string"])
-        if not str_cols.empty and any(
-            col.str.contains("\ufffd", regex=False, na=False).any()
-            for _, col in str_cols.items()
+        # Warn if any cell in the required text columns contains U+FFFD (the Unicode
+        # replacement character), which indicates bytes that could not be decoded.
+        # Only scan the five required columns: scanning all string columns in a wide
+        # CSV wastes time on columns that do not affect classification.  Generator
+        # short-circuits on the first matching column.
+        _text_cols_to_check = [c for c in ("description", "material", "origin", "category") if c in df.columns]
+        if _text_cols_to_check and any(
+            df[c].astype(str).str.contains("\ufffd", regex=False, na=False).any()
+            for c in _text_cols_to_check
         ):
             st.session_state["_bulk_messages"].append(("warning", (
                 "Some characters in the CSV could not be decoded and have been "
