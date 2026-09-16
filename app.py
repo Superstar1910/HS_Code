@@ -398,7 +398,29 @@ def _parse_value(raw) -> tuple[float, str]:
                 if di < ci:
                     # Dot precedes comma without a matching euro_tail — ambiguous.
                     return 0.0, " Warning: declared value format is ambiguous (dot before comma without standard decimal suffix); defaulted to £0 for risk assessment."
+                # Leading group must be 1–3 non-zero digits (e.g. "1,250.00" is valid;
+                # "1234,567.89" has a 4-digit leading group and is non-standard).
+                _leading = s[:ci]
+                if not (_leading.isdecimal() and 1 <= len(_leading) <= 3 and int(_leading) != 0):
+                    return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
                 if len(s[ci + 1:di]) != 3:
+                    return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
+            elif comma_count == 1 and dot_count == 0:
+                # Single comma, no decimal point: treat as UK/US thousands separator only
+                # when the leading group is 1–3 non-zero digits and the trailing group is
+                # exactly 3 digits (e.g. "1,250" → 1250, "12,500" → 12500).  Otherwise
+                # warn: "1234,567" has a 4-digit leading group; "1,25" has a 2-digit
+                # trailing group — both are non-standard and could be misread.
+                ci = s.index(',')
+                _leading = s[:ci]
+                _trailing = s[ci + 1:]
+                if not (
+                    _leading.isdecimal()
+                    and 1 <= len(_leading) <= 3
+                    and int(_leading) != 0
+                    and _trailing.isdecimal()
+                    and len(_trailing) == 3
+                ):
                     return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
             elif comma_count == 0 and dot_count == 1:
                 # Single dot with exactly 3 decimal digits is ambiguous ONLY when the
@@ -566,7 +588,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # _GENUINE_LEATHER_RE / _GENUINE_SILK_RE override the faux suppression within a
     # single unseparated segment that mentions both: "genuine leather and faux leather
     # trim" must still be flagged as genuine leather.
-    _mat_segs = [s for seg in _MAT_SEP_RE.split(material_lower) if (s := seg.strip())] if material_lower else []
+    _mat_segs = [_s for seg in _MAT_SEP_RE.split(material_lower) if (_s := seg.strip())] if material_lower else []
     if _mat_segs:
         is_silk = False
         is_leather = False
@@ -1665,17 +1687,17 @@ elif page == "Review Queue":
         st.write("")
         if st.button("🗑️ Clear Queue", help="Remove all items from the review queue. This cannot be undone."):
             cleared_count = len(st.session_state["review_items"])
-            st.session_state["review_items"].clear()
-            st.session_state["review_keys"].clear()
-            st.session_state["_review_edit_version"] += 1
             if cleared_count:
+                st.session_state["review_items"].clear()
+                st.session_state["review_keys"].clear()
+                st.session_state["_review_edit_version"] += 1
                 ts = datetime.now().isoformat(timespec="microseconds")
                 st.session_state["audit_log"].append({
                     "Timestamp": ts,
                     "Event": f"Review Queue cleared: {cleared_count} item(s) removed.",
                 })
                 st.toast(f"Queue cleared — {cleared_count} item(s) removed.", icon="🗑️")
-            st.rerun()
+                st.rerun()
     else:
         st.info("No items in the review queue. Classify a product first or use Bulk Upload.")
 
