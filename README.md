@@ -56,7 +56,7 @@ The `value` column accepts most common formats: `250`, `1250.00`, `£1,250`, `GB
 ## Architecture notes
 
 - **Classification cache**: `_classify_product_cached` is decorated with `functools.lru_cache(maxsize=4096)`. Origin is excluded from the cache key (only affects the explanation note, not the code assignment), so products from different countries share entries.
-- **Material-segment parsing**: material fields containing comma- or semicolon-separated segments (e.g., `"genuine leather outer; faux leather lining"`) are checked per-segment so a faux qualifier in one segment does not suppress a genuine-material signal in another.
+- **Material-segment parsing**: material fields containing comma-, semicolon-, or forward-slash-separated segments (e.g., `"genuine leather outer; faux leather lining"`, `"80% leather / 20% suede"`) are checked per-segment so a faux qualifier in one segment does not suppress a genuine-material signal in another.
 - **`types.MappingProxyType`**: cached results are returned as immutable proxy objects; `classify_product` makes a `dict` shallow-copy before appending the origin note, so the cache entry is never mutated.
 - **Bulk processing**: rows are classified in chunks of `max(5, n // 100)` via `df.apply()` rather than per-row `iterrows()`, giving ~100 progress-bar updates for a 5,000-row file while avoiding per-row Series overhead.
 

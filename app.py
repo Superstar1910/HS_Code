@@ -206,8 +206,11 @@ _SCARF_TECHNICAL_RE = re.compile(
 # fields (e.g. "woven silks", "fine leathers") and bulk CSV exports.
 _SILK_RE = re.compile(r'\bsilks?\b(?![-\s]+(?:effect|like|look|feel|finish|touch|screen|road)\b)')
 _LEATHER_RE = re.compile(r'\bleathers?\b(?![-\s]+(?:look|like|effect|feel|finish|touch)\b)')
-# Compiled separator for splitting material fields on commas or semicolons.
-_MAT_SEP_RE = re.compile(r'[,;]')
+# Compiled separator for splitting material fields on commas, semicolons, or
+# forward slashes.  Slash-separated compositions (e.g. "leather/suede",
+# "50% cotton / 50% polyester") are common in supplier data exports and must
+# be split so per-segment faux/genuine-material detection works correctly.
+_MAT_SEP_RE = re.compile(r'[,;/]')
 
 # Threshold at or above which items attract additional customs scrutiny
 HIGH_VALUE_THRESHOLD = 1000.0
@@ -1705,6 +1708,11 @@ elif page == "Audit Trail":
     st.title("Audit Trail")
 
     seed_logs = st.session_state["seed_logs"]
+
+    st.caption(
+        "The first three entries are illustrative demo records pre-loaded at session start. "
+        "All subsequent entries are real events from this session."
+    )
 
     session_logs = st.session_state["audit_log"]
     all_logs = seed_logs + session_logs
