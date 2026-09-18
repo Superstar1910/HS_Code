@@ -1581,10 +1581,11 @@ elif page == "Bulk Upload":
         st.dataframe(result_df, use_container_width=True)
         # Use pre-computed bytes stored at classification time to avoid an
         # O(n) to_csv().encode() call on every Streamlit rerun.
+        _orig_stem = bulk["filename"].rsplit(".", 1)[0] if "." in bulk["filename"] else bulk["filename"]
         st.download_button(
             "Download Results CSV",
             data=bulk["csv_bytes"],
-            file_name="hs_classification_results.csv",
+            file_name=f"{_orig_stem}_classified.csv",
             mime="text/csv",
         )
     elif not uploaded:
@@ -1726,18 +1727,18 @@ elif page == "Audit Trail":
         logs = pd.DataFrame(columns=["Timestamp", "Event"])
     st.dataframe(logs, use_container_width=True)
     # Cache the CSV bytes so the expensive to_csv().encode() call is not
-    # repeated on every Streamlit rerun.  The log count is a sufficient cache
-    # key because entries are append-only and seed logs are fixed at session
-    # start; a matching count always means identical content.
-    # A single session-state key ("_audit_csv_cache") holds a (count, bytes)
-    # tuple and is updated only when the count changes — replacing the previous
-    # _audit_csv_{n} pattern that created a new key per unique count and never
-    # evicted old entries, leaking one entry per audit event over the session.
+    # repeated on every Streamlit rerun.  The cache key is (count, last_timestamp)
+    # rather than count alone: the timestamp component means a future "clear audit
+    # log" feature cannot accidentally serve stale bytes when the new log happens
+    # to reach the same entry count as the cleared one.  For append-only logs the
+    # count is sufficient, but the second component is a cheap extra guard.
     _audit_len = len(all_logs)
+    _audit_last_ts = all_logs[-1]["Timestamp"] if all_logs else ""
+    _audit_cache_key = (_audit_len, _audit_last_ts)
     _cached_audit = st.session_state["_audit_csv_cache"]
-    if _cached_audit is None or _cached_audit[0] != _audit_len:
+    if _cached_audit is None or _cached_audit[0] != _audit_cache_key:
         _audit_csv_bytes = logs.to_csv(index=False).encode("utf-8-sig")
-        st.session_state["_audit_csv_cache"] = (_audit_len, _audit_csv_bytes)
+        st.session_state["_audit_csv_cache"] = (_audit_cache_key, _audit_csv_bytes)
     else:
         _audit_csv_bytes = _cached_audit[1]
     st.download_button(

@@ -8,3 +8,8 @@ dist/
 build/
 .env
 *.log
+venv/
+.venv/
+env/
+.streamlit/secrets.toml
+.DS_Store
