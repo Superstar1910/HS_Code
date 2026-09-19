@@ -195,8 +195,16 @@ _SCARF_TECHNICAL_RE = re.compile(
     # cover all three forms.  The original scarfs? missed "scarves", leaving
     # descriptions like "scarves joint cutter" to be misclassified as HS 6214
     # textile scarves (12% duty) instead of being suppressed.
-    r'\b(?:scarf|scarfs|scarves)\s+(?:joint|joints|weld|welds|cut|cuts|plane|planes|ring|rings)\b'
-    r'|\b(?:joint|weld|cut|plane)\s+(?:scarf|scarfs|scarves)\b'
+    # `cutter|cutters|router|routers|bit|bits` added to the forward alternation:
+    # "scarf cutter tool" / "scarf router bit" are woodworking tools and must
+    # be suppressed even when the bare noun (without "joint") precedes the tool
+    # keyword.  Without this addition "scarf cutter" (no "joint") would pass the
+    # guard and be misclassified as HS 621490 (textile scarves, 12% duty).
+    # NOTE: `ring|rings` is intentionally absent from the reverse pattern below:
+    # "ring scarf" / "rings scarf" name a circular textile accessory that IS a
+    # genuine scarf and must NOT be suppressed.  The asymmetry is deliberate.
+    r'\b(?:scarf|scarfs|scarves)\s+(?:joint|joints|weld|welds|cut|cuts|cutter|cutters|plane|planes|ring|rings|router|routers|bit|bits)\b'
+    r'|\b(?:joint|weld|cut|cutter|cutters|plane|router|routers|bit|bits)\s+(?:scarf|scarfs|scarves)\b'
     r'|\bshawl[-\s]+(?:collar|lapel|neckline|neck)\b'
 )
 # Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
@@ -793,11 +801,16 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "vat": "20%",
             "explanation": "Classified under travel goods, handbags and similar containers (HS 4202); verify material composition for precise subheading — leather surface attracts 4202.21/4202.31 (16% duty)." + hv_note,
         })
-    elif is_scarf and not is_bag and not is_food and not is_perfume and not is_cosmetics:
+    elif is_scarf and not is_bag and not is_leather and not is_food and not is_perfume and not is_cosmetics:
         # Explicit `not is_bag` guard mirrors the silk-scarf branch above.
         # Although the preceding `elif is_bag` arms already prevent this branch
         # from being reached when is_bag is True, the guard is stated explicitly
         # so the intent is self-evident and future chain reordering is safe.
+        # `not is_leather` guard added: a genuine leather scarf straddles HS 4203
+        # (leather clothing accessories, 3.7% duty) and HS 6214 (textile scarves,
+        # 12% duty).  The correct subheading requires a customs classification
+        # ruling; silently emitting HS 621490 at 12% would be a declaration error.
+        # Falling through to UNCLASSIFIED routes these items to the review queue.
         # `not is_perfume` mirrors the same guard on the silk-scarf branch: a
         # description like "cashmere shawl fragrance" or "silk scarf cologne" that
         # triggers both is_scarf and is_perfume should route to HS 3303 (perfume),
@@ -1311,13 +1324,12 @@ st.session_state.setdefault("_review_edit_version", 0)
 # sessions.
 st.session_state.setdefault("_audit_csv_cache", None)
 if "seed_logs" not in st.session_state:
-    _seed_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    _yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     st.session_state["seed_logs"] = [
-        {"Timestamp": f"{_seed_date}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
-        {"Timestamp": f"{_seed_date}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
-        {"Timestamp": f"{_seed_date}T09:18:00.000000", "Event": "Approved and published to product master"},
+        {"Timestamp": f"{_yesterday}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
+        {"Timestamp": f"{_yesterday}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
+        {"Timestamp": f"{_yesterday}T09:18:00.000000", "Event": "Approved and published to product master"},
     ]
-    del _seed_date
 
 st.sidebar.title("HS & Shipment Pre-Check")
 page = st.sidebar.radio("Navigate", ["Dashboard", "Classify", "Bulk Upload", "Review Queue", "Audit Trail"])
