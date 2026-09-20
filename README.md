@@ -15,7 +15,7 @@ A Streamlit application for classifying products against UK commodity codes (HS 
 
 | File | Description |
 |---|---|
-| `app.py` | Main Streamlit application (~1,700 lines) |
+| `app.py` | Main Streamlit application (~1,760 lines) |
 | `requirements.txt` | Python dependencies |
 | `sample_products.csv` | 15-row test file covering all supported categories and edge cases |
 

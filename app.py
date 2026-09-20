@@ -951,10 +951,10 @@ def classify_row(row: pd.Series) -> pd.Series:
     val, val_warning = _parse_value(row.get("value"))
     try:
         result = classify_product(
-            _safe_str(row.get("description", "")),
-            _safe_str(row.get("material", "")),
-            _safe_str(row.get("origin", "")),
-            _safe_str(row.get("category", "")),
+            row.get("description", ""),
+            row.get("material", ""),
+            row.get("origin", ""),
+            row.get("category", ""),
             val,
         )
         if val_warning:
@@ -1327,7 +1327,7 @@ if "seed_logs" not in st.session_state:
     _yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     st.session_state["seed_logs"] = [
         {"Timestamp": f"{_yesterday}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
-        {"Timestamp": f"{_yesterday}T09:17:00.000000", "Event": "Reviewed by compliance_officer_01"},
+        {"Timestamp": f"{_yesterday}T09:17:00.000000", "Event": "Reviewed by analyst_01"},
         {"Timestamp": f"{_yesterday}T09:18:00.000000", "Event": "Approved and published to product master"},
     ]
 
@@ -1706,6 +1706,7 @@ elif page == "Review Queue":
             if cleared_count:
                 st.session_state["review_items"].clear()
                 st.session_state["review_keys"].clear()
+                st.session_state["_audit_csv_cache"] = None
                 st.session_state["_review_edit_version"] += 1
                 ts = datetime.now().isoformat(timespec="microseconds")
                 st.session_state["audit_log"].append({
