@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="HS & Shipment Pre-Check", layout="wide")
+st.set_page_config(page_title="HS & Shipment Pre-Check", page_icon="🛃", layout="wide")
 
 def _make_word_re(*words: str) -> re.Pattern[str]:
     """Return a compiled whole-word alternation regex for the given keywords.
@@ -36,13 +36,17 @@ _ISO_CODES = (
     '|VND|XAF|XOF|ZAR|ZMW'
 )
 # Strips currency symbols (£$€¥₹) and ISO 4217 text codes that appear as a
-# prefix ("GBP 250", "USD1250") or suffix ("250 EUR", "250USD") in value
-# fields exported from ERP/accounting systems.  Start/end anchors are used
-# instead of \b so no-space variants like "USD1250" are handled correctly
+# prefix ("GBP 250", "USD1250", "+GBP 1,000") or suffix ("250 EUR", "250USD")
+# in value fields exported from ERP/accounting systems.  Start/end anchors are
+# used instead of \b so no-space variants like "USD1250" are handled correctly
 # (there is no word boundary between a letter and a digit in \b semantics).
+# The optional leading \+? in the prefix branch handles ERP systems that export
+# positive values with an explicit sign before the currency code ("+GBP 1,000",
+# "+USD1250").  Without it the currency code is not stripped and the subsequent
+# numeric parser returns a "could not be parsed" warning for these values.
 _VALUE_STRIP_RE = re.compile(
     r'[£$€¥₹]'
-    r'|^(?:' + _ISO_CODES + r')\s*'
+    r'|^\+?(?:' + _ISO_CODES + r')\s*'
     r'|\s*(?:' + _ISO_CODES + r')$',
     re.IGNORECASE,
 )
@@ -119,7 +123,7 @@ _FAUX_SILK_RE = re.compile(
     r'|\bman[-\s]?made[-\s]+silks?\b'
 )
 _FAUX_LEATHER_RE = re.compile(
-    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane|eco|bonded|recycled)[-\s]+leathers?\b'
+    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane|eco|bonded)[-\s]+leathers?\b'
 )
 # Explicit "genuine / real / authentic" qualifiers in the same material segment
 # override a co-present faux marker.  This handles supplier material strings that
@@ -195,16 +199,8 @@ _SCARF_TECHNICAL_RE = re.compile(
     # cover all three forms.  The original scarfs? missed "scarves", leaving
     # descriptions like "scarves joint cutter" to be misclassified as HS 6214
     # textile scarves (12% duty) instead of being suppressed.
-    # `cutter|cutters|router|routers|bit|bits` added to the forward alternation:
-    # "scarf cutter tool" / "scarf router bit" are woodworking tools and must
-    # be suppressed even when the bare noun (without "joint") precedes the tool
-    # keyword.  Without this addition "scarf cutter" (no "joint") would pass the
-    # guard and be misclassified as HS 621490 (textile scarves, 12% duty).
-    # NOTE: `ring|rings` is intentionally absent from the reverse pattern below:
-    # "ring scarf" / "rings scarf" name a circular textile accessory that IS a
-    # genuine scarf and must NOT be suppressed.  The asymmetry is deliberate.
-    r'\b(?:scarf|scarfs|scarves)\s+(?:joint|joints|weld|welds|cut|cuts|cutter|cutters|plane|planes|ring|rings|router|routers|bit|bits)\b'
-    r'|\b(?:joint|weld|cut|cutter|cutters|plane|router|routers|bit|bits)\s+(?:scarf|scarfs|scarves)\b'
+    r'\b(?:scarf|scarfs|scarves)\s+(?:joint|joints|weld|welds|cut|cuts|plane|planes|ring|rings)\b'
+    r'|\b(?:joint|weld|cut|plane)\s+(?:scarf|scarfs|scarves)\b'
     r'|\bshawl[-\s]+(?:collar|lapel|neckline|neck)\b'
 )
 # Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
@@ -214,11 +210,8 @@ _SCARF_TECHNICAL_RE = re.compile(
 # fields (e.g. "woven silks", "fine leathers") and bulk CSV exports.
 _SILK_RE = re.compile(r'\bsilks?\b(?![-\s]+(?:effect|like|look|feel|finish|touch|screen|road)\b)')
 _LEATHER_RE = re.compile(r'\bleathers?\b(?![-\s]+(?:look|like|effect|feel|finish|touch)\b)')
-# Compiled separator for splitting material fields on commas, semicolons, or
-# forward slashes.  Slash-separated compositions (e.g. "leather/suede",
-# "50% cotton / 50% polyester") are common in supplier data exports and must
-# be split so per-segment faux/genuine-material detection works correctly.
-_MAT_SEP_RE = re.compile(r'[,;/]')
+# Compiled separator for splitting material fields on commas or semicolons.
+_MAT_SEP_RE = re.compile(r'[,;]')
 
 # Threshold at or above which items attract additional customs scrutiny
 HIGH_VALUE_THRESHOLD = 1000.0
@@ -295,7 +288,8 @@ def _parse_value(raw) -> tuple[float, str]:
     if isinstance(raw, str):
         # Strip currency symbols and ISO 4217 text codes in one pass; strip()
         # afterward removes any whitespace left between the code and the number
-        # (e.g. "GBP 250" → "GBP 250" → sub → " 250" → strip → "250").
+        # (e.g. "GBP 250" → sub → " 250" → strip → "250";
+        #  "+GBP 1,000" → sub → "1,000" via the \+? prefix branch in _VALUE_STRIP_RE).
         s = _VALUE_STRIP_RE.sub('', raw.strip()).strip()
         if not s:
             return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
@@ -307,11 +301,13 @@ def _parse_value(raw) -> tuple[float, str]:
         # more informative "negative value" warning.
         if s[:1] in ('-', '−', '–'):
             return 0.0, " Warning: declared value was negative; defaulted to £0 for risk assessment."
-        # Strip a leading '+' before any structural checks: some ERP systems export
-        # positive values with an explicit '+' sign (e.g. "+1,250,000", "+1.250.000",
-        # "+1.250,00").  float() natively accepts a leading '+', so stripping it here
-        # only affects the isdecimal() and length guards in every branch below — the
-        # final parsed numeric value is identical to the unstripped form.
+        # Strip a residual leading '+' before any structural checks.  ERP systems
+        # that use "+GBP 1,250" format have the '+' removed by _VALUE_STRIP_RE's
+        # \+? prefix branch above; this lstrip handles the remaining case of a
+        # bare signed number (e.g. "+1,250,000", "+1.250.000", "+1.250,00") where
+        # no currency code was present.  float() natively accepts a leading '+',
+        # so stripping it here only affects the isdecimal() and length guards in
+        # every branch below — the final parsed numeric value is identical.
         s = s.lstrip('+')
         # A bare '+' (with no digits) becomes empty after lstrip; treat it as a
         # missing value rather than letting it fall through to float('') and
@@ -409,29 +405,7 @@ def _parse_value(raw) -> tuple[float, str]:
                 if di < ci:
                     # Dot precedes comma without a matching euro_tail — ambiguous.
                     return 0.0, " Warning: declared value format is ambiguous (dot before comma without standard decimal suffix); defaulted to £0 for risk assessment."
-                # Leading group must be 1–3 non-zero digits (e.g. "1,250.00" is valid;
-                # "1234,567.89" has a 4-digit leading group and is non-standard).
-                _leading = s[:ci]
-                if not (_leading.isdecimal() and 1 <= len(_leading) <= 3 and int(_leading) != 0):
-                    return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
                 if len(s[ci + 1:di]) != 3:
-                    return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
-            elif comma_count == 1 and dot_count == 0:
-                # Single comma, no decimal point: treat as UK/US thousands separator only
-                # when the leading group is 1–3 non-zero digits and the trailing group is
-                # exactly 3 digits (e.g. "1,250" → 1250, "12,500" → 12500).  Otherwise
-                # warn: "1234,567" has a 4-digit leading group; "1,25" has a 2-digit
-                # trailing group — both are non-standard and could be misread.
-                ci = s.index(',')
-                _leading = s[:ci]
-                _trailing = s[ci + 1:]
-                if not (
-                    _leading.isdecimal()
-                    and 1 <= len(_leading) <= 3
-                    and int(_leading) != 0
-                    and _trailing.isdecimal()
-                    and len(_trailing) == 3
-                ):
                     return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
             elif comma_count == 0 and dot_count == 1:
                 # Single dot with exactly 3 decimal digits is ambiguous ONLY when the
@@ -599,7 +573,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # _GENUINE_LEATHER_RE / _GENUINE_SILK_RE override the faux suppression within a
     # single unseparated segment that mentions both: "genuine leather and faux leather
     # trim" must still be flagged as genuine leather.
-    _mat_segs = [_s for seg in _MAT_SEP_RE.split(material_lower) if (_s := seg.strip())] if material_lower else []
+    _mat_segs = list(filter(None, (seg.strip() for seg in _MAT_SEP_RE.split(material_lower)))) if material_lower else []
     if _mat_segs:
         is_silk = False
         is_leather = False
@@ -801,16 +775,11 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "vat": "20%",
             "explanation": "Classified under travel goods, handbags and similar containers (HS 4202); verify material composition for precise subheading — leather surface attracts 4202.21/4202.31 (16% duty)." + hv_note,
         })
-    elif is_scarf and not is_bag and not is_leather and not is_food and not is_perfume and not is_cosmetics:
+    elif is_scarf and not is_bag and not is_food and not is_perfume and not is_cosmetics:
         # Explicit `not is_bag` guard mirrors the silk-scarf branch above.
         # Although the preceding `elif is_bag` arms already prevent this branch
         # from being reached when is_bag is True, the guard is stated explicitly
         # so the intent is self-evident and future chain reordering is safe.
-        # `not is_leather` guard added: a genuine leather scarf straddles HS 4203
-        # (leather clothing accessories, 3.7% duty) and HS 6214 (textile scarves,
-        # 12% duty).  The correct subheading requires a customs classification
-        # ruling; silently emitting HS 621490 at 12% would be a declaration error.
-        # Falling through to UNCLASSIFIED routes these items to the review queue.
         # `not is_perfume` mirrors the same guard on the silk-scarf branch: a
         # description like "cashmere shawl fragrance" or "silk scarf cologne" that
         # triggers both is_scarf and is_perfume should route to HS 3303 (perfume),
@@ -948,7 +917,11 @@ def classify_row(row: pd.Series) -> pd.Series:
     # Parse value before the try/except so val is always defined in the except
     # handler — preserving the correct risk rating even when classify_product
     # raises.  _parse_value is designed never to raise; this is purely defensive.
-    val, val_warning = _parse_value(row.get("value"))
+    # Default to 0.0 so _parse_value receives a well-typed sentinel rather than
+    # None when the "value" column is absent from the row (e.g. a partially
+    # structured input), producing the "missing" warning instead of falling
+    # through to pd.isna() inside the generic exception handler.
+    val, val_warning = _parse_value(row.get("value", 0.0))
     try:
         result = classify_product(
             row.get("description", ""),
@@ -1117,15 +1090,14 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             low_memory=False,
         )
         df.columns = df.columns.str.strip().str.lower()
-        # Warn if any cell in the required text columns contains U+FFFD (the Unicode
-        # replacement character), which indicates bytes that could not be decoded.
-        # Only scan the five required columns: scanning all string columns in a wide
-        # CSV wastes time on columns that do not affect classification.  Generator
-        # short-circuits on the first matching column.
-        _text_cols_to_check = [c for c in ("description", "material", "origin", "category") if c in df.columns]
-        if _text_cols_to_check and any(
-            df[c].astype(str).str.contains("\ufffd", regex=False, na=False).any()
-            for c in _text_cols_to_check
+        # Warn if any cell contains U+FFFD (the Unicode replacement character),
+        # which indicates bytes that could not be decoded from the file's encoding.
+        # Generator short-circuits on the first matching column instead of scanning
+        # all columns then discarding the intermediate boolean Series.
+        str_cols = df.select_dtypes(include=["object", "string"])
+        if not str_cols.empty and any(
+            col.str.contains("\ufffd", regex=False, na=False).any()
+            for _, col in str_cols.items()
         ):
             st.session_state["_bulk_messages"].append(("warning", (
                 "Some characters in the CSV could not be decoded and have been "
@@ -1324,12 +1296,13 @@ st.session_state.setdefault("_review_edit_version", 0)
 # sessions.
 st.session_state.setdefault("_audit_csv_cache", None)
 if "seed_logs" not in st.session_state:
-    _yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    _seed_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     st.session_state["seed_logs"] = [
-        {"Timestamp": f"{_yesterday}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
-        {"Timestamp": f"{_yesterday}T09:17:00.000000", "Event": "Reviewed by analyst_01"},
-        {"Timestamp": f"{_yesterday}T09:18:00.000000", "Event": "Approved and published to product master"},
+        {"Timestamp": f"{_seed_date}T09:12:00.000000", "Event": "SKU123 classified as 6214100090 by system"},
+        {"Timestamp": f"{_seed_date}T09:17:00.000000", "Event": "Reviewed by analyst_01"},
+        {"Timestamp": f"{_seed_date}T09:18:00.000000", "Event": "Approved and published to product master"},
     ]
+    del _seed_date
 
 st.sidebar.title("HS & Shipment Pre-Check")
 page = st.sidebar.radio("Navigate", ["Dashboard", "Classify", "Bulk Upload", "Review Queue", "Audit Trail"])
@@ -1416,7 +1389,7 @@ elif page == "Classify":
                 "may return UNCLASSIFIED for food or confectionery items — select 'food' for edible products."
             ),
         )
-        value = st.number_input("Declared Value (£)", min_value=0.0, value=250.0, step=1.0)
+        value = st.number_input("Declared Value (£)", min_value=0.0, max_value=10_000_000.0, value=250.0, step=1.0)
 
         if st.button("Run Classification"):
             if not description.strip():
@@ -1593,11 +1566,10 @@ elif page == "Bulk Upload":
         st.dataframe(result_df, use_container_width=True)
         # Use pre-computed bytes stored at classification time to avoid an
         # O(n) to_csv().encode() call on every Streamlit rerun.
-        _orig_stem = bulk["filename"].rsplit(".", 1)[0] if "." in bulk["filename"] else bulk["filename"]
         st.download_button(
             "Download Results CSV",
             data=bulk["csv_bytes"],
-            file_name=f"{_orig_stem}_classified.csv",
+            file_name="hs_classification_results.csv",
             mime="text/csv",
         )
     elif not uploaded:
@@ -1625,6 +1597,9 @@ elif page == "Review Queue":
         # Editable table: Status column is a dropdown; all other columns are read-only.
         # num_rows="fixed" prevents row deletion/insertion so the zip-based status-sync
         # loop below always compares items[i] against the correct edited row at index i.
+        # Derive the disabled list dynamically so adding a new display column does not
+        # accidentally leave it editable — only "Status" is intentionally writable.
+        _editable_cols = {"Status"}
         edited_df = st.data_editor(
             review_df,
             column_config={
@@ -1639,7 +1614,7 @@ elif page == "Review Queue":
                     required=True,
                 ),
             },
-            disabled=["Product", "Value (£)", "Suggested Code", "Confidence", "Risk", "Explanation"],
+            disabled=[col for col in display_cols if col not in _editable_cols],
             num_rows="fixed",
             hide_index=True,
             use_container_width=True,
@@ -1703,18 +1678,18 @@ elif page == "Review Queue":
         st.write("")
         if st.button("🗑️ Clear Queue", help="Remove all items from the review queue. This cannot be undone."):
             cleared_count = len(st.session_state["review_items"])
+            st.session_state["review_items"].clear()
+            st.session_state["review_keys"].clear()
+            st.session_state["_audit_csv_cache"] = None
+            st.session_state["_review_edit_version"] += 1
             if cleared_count:
-                st.session_state["review_items"].clear()
-                st.session_state["review_keys"].clear()
-                st.session_state["_audit_csv_cache"] = None
-                st.session_state["_review_edit_version"] += 1
                 ts = datetime.now().isoformat(timespec="microseconds")
                 st.session_state["audit_log"].append({
                     "Timestamp": ts,
                     "Event": f"Review Queue cleared: {cleared_count} item(s) removed.",
                 })
                 st.toast(f"Queue cleared — {cleared_count} item(s) removed.", icon="🗑️")
-                st.rerun()
+            st.rerun()
     else:
         st.info("No items in the review queue. Classify a product first or use Bulk Upload.")
 
@@ -1722,11 +1697,6 @@ elif page == "Audit Trail":
     st.title("Audit Trail")
 
     seed_logs = st.session_state["seed_logs"]
-
-    st.caption(
-        "The first three entries are illustrative demo records pre-loaded at session start. "
-        "All subsequent entries are real events from this session."
-    )
 
     session_logs = st.session_state["audit_log"]
     all_logs = seed_logs + session_logs
@@ -1740,18 +1710,18 @@ elif page == "Audit Trail":
         logs = pd.DataFrame(columns=["Timestamp", "Event"])
     st.dataframe(logs, use_container_width=True)
     # Cache the CSV bytes so the expensive to_csv().encode() call is not
-    # repeated on every Streamlit rerun.  The cache key is (count, last_timestamp)
-    # rather than count alone: the timestamp component means a future "clear audit
-    # log" feature cannot accidentally serve stale bytes when the new log happens
-    # to reach the same entry count as the cleared one.  For append-only logs the
-    # count is sufficient, but the second component is a cheap extra guard.
+    # repeated on every Streamlit rerun.  The log count is a sufficient cache
+    # key because entries are append-only and seed logs are fixed at session
+    # start; a matching count always means identical content.
+    # A single session-state key ("_audit_csv_cache") holds a (count, bytes)
+    # tuple and is updated only when the count changes — replacing the previous
+    # _audit_csv_{n} pattern that created a new key per unique count and never
+    # evicted old entries, leaking one entry per audit event over the session.
     _audit_len = len(all_logs)
-    _audit_last_ts = all_logs[-1]["Timestamp"] if all_logs else ""
-    _audit_cache_key = (_audit_len, _audit_last_ts)
     _cached_audit = st.session_state["_audit_csv_cache"]
-    if _cached_audit is None or _cached_audit[0] != _audit_cache_key:
+    if _cached_audit is None or _cached_audit[0] != _audit_len:
         _audit_csv_bytes = logs.to_csv(index=False).encode("utf-8-sig")
-        st.session_state["_audit_csv_cache"] = (_audit_cache_key, _audit_csv_bytes)
+        st.session_state["_audit_csv_cache"] = (_audit_len, _audit_csv_bytes)
     else:
         _audit_csv_bytes = _cached_audit[1]
     st.download_button(
