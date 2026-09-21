@@ -200,10 +200,13 @@ _SCARF_TECHNICAL_RE = re.compile(
     # be suppressed even when the bare noun (without "joint") precedes the tool
     # keyword.  Without this addition "scarf cutter" (no "joint") would pass the
     # guard and be misclassified as HS 621490 (textile scarves, 12% duty).
-    # NOTE: `ring|rings` is intentionally absent from the reverse pattern below:
+    # NOTE: `ring|rings` is absent from BOTH forward and reverse patterns.
     # "ring scarf" / "rings scarf" name a circular textile accessory that IS a
-    # genuine scarf and must NOT be suppressed.  The asymmetry is deliberate.
-    r'\b(?:scarf|scarfs|scarves)\s+(?:joint|joints|weld|welds|cut|cuts|cutter|cutters|plane|planes|ring|rings|router|routers|bit|bits)\b'
+    # genuine scarf and must NOT be suppressed.
+    # "scarf ring" is a fashion clasp/holder for scarves (HS 6217 accessory) and
+    # must also not be suppressed — including ring|rings in the forward alternation
+    # would incorrectly route it to UNCLASSIFIED instead of a textile code.
+    r'\b(?:scarf|scarfs|scarves)\s+(?:joint|joints|weld|welds|cut|cuts|cutter|cutters|plane|planes|router|routers|bit|bits)\b'
     r'|\b(?:joint|weld|cut|cutter|cutters|plane|router|routers|bit|bits)\s+(?:scarf|scarfs|scarves)\b'
     r'|\bshawl[-\s]+(?:collar|lapel|neckline|neck)\b'
 )
@@ -246,7 +249,7 @@ UNCLASSIFIED_CODE = "UNCLASSIFIED"
 # Note: pandas treats a bare tuple as a MultiIndex key, so _BULK_QUEUE_COLS_LIST
 # (a pre-built list) is used at call sites — building it once here avoids a
 # repeated tuple-to-list conversion inside _process_bulk_upload.
-_BULK_QUEUE_COLS = ("description", "value", "uk_code", "confidence", "explanation", "risk")
+_BULK_QUEUE_COLS = ("description", "material", "value", "uk_code", "confidence", "explanation", "risk")
 _BULK_QUEUE_COLS_LIST: list[str] = list(_BULK_QUEUE_COLS)
 
 # Maximum number of distinct (desc, material, category, high_value) tuples held in
@@ -1028,6 +1031,7 @@ def _add_to_review_queue(result: dict) -> None:
         st.session_state["review_keys"].add(key)
         st.session_state["review_items"].append({
             "Product": _safe_str(result.get("description", "")),
+            "Material": _safe_str(result.get("material", "")),
             # Store the normalised float so the column sorts numerically and
             # renders consistently regardless of how the raw value was supplied.
             "Value (£)": safe_val,
@@ -1289,6 +1293,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         for row in queueable_df[_BULK_QUEUE_COLS_LIST].to_dict("records"):
             _add_to_review_queue({
                 "description": _safe_str(row.get("description", "")),
+                "material": _safe_str(row.get("material", "")),
                 "value": row.get("value", 0.0),
                 "uk_code": _safe_str(row.get("uk_code", "")),
                 "confidence": row.get("confidence", 0.0),
@@ -1619,7 +1624,7 @@ elif page == "Review Queue":
         _rq_cols[3].metric("Overridden", _rq_status[STATUS_OVERRIDDEN])
         _rq_cols[4].metric("🔴 High-Risk", _rq_risk[RISK_RED])
 
-        display_cols = ["Product", "Value (£)", "Suggested Code", "Confidence", "Risk", "Status", "Explanation"]
+        display_cols = ["Product", "Material", "Value (£)", "Suggested Code", "Confidence", "Risk", "Status", "Explanation"]
         review_df = pd.DataFrame(items, columns=display_cols)
 
         # Editable table: Status column is a dropdown; all other columns are read-only.
@@ -1639,7 +1644,7 @@ elif page == "Review Queue":
                     required=True,
                 ),
             },
-            disabled=["Product", "Value (£)", "Suggested Code", "Confidence", "Risk", "Explanation"],
+            disabled=["Product", "Material", "Value (£)", "Suggested Code", "Confidence", "Risk", "Explanation"],
             num_rows="fixed",
             hide_index=True,
             use_container_width=True,
