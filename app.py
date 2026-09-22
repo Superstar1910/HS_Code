@@ -164,6 +164,15 @@ _FRAGRANCE_NON_PERFUME_RE = re.compile(
     r'|\b(?:enriched\s+with|infused\s+with|with|added)\s+'
     r'(?:(?:natural|synthetic|artificial|floral|fruity|citrus|botanical|herbal)\s+)?fragrances?\b'
 )
+# Unambiguous perfume product-type terms (eau de parfum/toilette/cologne, aftershave,
+# cologne, perfume).  Used to override _FRAGRANCE_NON_PERFUME_RE when it fires on a
+# description that also names the product as an actual toilet water: e.g.
+# "Eau de Parfum with Fragrance" must classify as HS 3303, not UNCLASSIFIED.
+# Bare "fragrances?" is excluded because it is also an INCI ingredient-list word
+# and would disable the suppressor on "moisturizing lotion with fragrances".
+_STRONG_PERFUME_PRODUCT_RE = re.compile(
+    r'\b(?:perfumes?|eau[ -]de[ -](?:parfum|toilette|cologne)|aftershaves?|colognes?)\b'
+)
 # Pre-compiled patterns to strip polysemous words for culinary vs confection disambiguation.
 _TRUFFLE_WORD_RE = re.compile(r'\btruffles?\b')
 # "caramel" / "caramels" appear both as chocolate confections and as culinary flavour
@@ -602,7 +611,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # _GENUINE_LEATHER_RE / _GENUINE_SILK_RE override the faux suppression within a
     # single unseparated segment that mentions both: "genuine leather and faux leather
     # trim" must still be flagged as genuine leather.
-    _mat_segs = [_s for seg in _MAT_SEP_RE.split(material_lower) if (_s := seg.strip())] if material_lower else []
+    _mat_segs = [seg.strip() for seg in _MAT_SEP_RE.split(material_lower) if seg.strip()] if material_lower else []
     if _mat_segs:
         is_silk = False
         is_leather = False
@@ -647,10 +656,18 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # _PERFUME_MATERIAL_RE fires solely on the material (e.g. material="fragrance oil
     # concentrate") without a perfume-type word in desc, omitting the material check
     # would leave the suppressor silent and misclassify the item as HS 3303.
+    # _FRAGRANCE_NON_PERFUME_RE fires on "with fragrances" (and similar ingredient-list
+    # phrases) to prevent cosmetics from being misclassified as perfume.  But if the
+    # description also contains an unambiguous perfume product term (eau de parfum,
+    # cologne, aftershave, perfume), the suppressor must not override it — otherwise
+    # "Eau de Parfum with Fragrance" is incorrectly left as UNCLASSIFIED.
+    # The override applies to desc only; material_lower suppressor remains unconditional.
+    _frag_non_perfume_desc = bool(_FRAGRANCE_NON_PERFUME_RE.search(desc))
     is_perfume = not _free_marker and bool(
         _PERFUME_RE.search(desc) or _PERFUME_MATERIAL_RE.search(material_lower)
     ) and not bool(
-        _FRAGRANCE_NON_PERFUME_RE.search(desc) or _FRAGRANCE_NON_PERFUME_RE.search(material_lower)
+        (_frag_non_perfume_desc and not _STRONG_PERFUME_PRODUCT_RE.search(desc))
+        or _FRAGRANCE_NON_PERFUME_RE.search(material_lower)
     )
     # Non-fragrance beauty products (skincare, make-up, etc.) fall here.
     is_cosmetics = category_lower == "beauty" and not is_perfume
