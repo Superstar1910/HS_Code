@@ -224,8 +224,8 @@ _SCARF_TECHNICAL_RE = re.compile(
 # than the genuine material, preventing false duty-code upgrades for polyester/PU goods.
 # s? covers the plural ("silks", "leathers") which appears in supplier-facing material
 # fields (e.g. "woven silks", "fine leathers") and bulk CSV exports.
-_SILK_RE = re.compile(r'\bsilks?\b(?![-\s]+(?:effect|like|look|feel|finish|touch|screen|road)\b)')
-_LEATHER_RE = re.compile(r'\bleathers?\b(?![-\s]+(?:look|like|effect|feel|finish|touch)\b)')
+_SILK_RE = re.compile(r'\bsilks?\b(?![-\s]+(?:effect|like|look(?:ing)?|feel|finish|touch|screen|road)\b)')
+_LEATHER_RE = re.compile(r'\bleathers?\b(?![-\s]+(?:look(?:ing)?|like|effect|feel|finish|touch)\b)')
 # Compiled separator for splitting material fields on commas, semicolons, or
 # forward slashes.  Slash-separated compositions (e.g. "leather/suede",
 # "50% cotton / 50% polyester") are common in supplier data exports and must
@@ -1362,11 +1362,8 @@ if page == "Dashboard":
     session_items = st.session_state["review_items"]
     session_total = len(session_items)
     # Single pass over session_items to build both status and risk counters.
-    status_counts: Counter = Counter()
-    risk_counts: Counter = Counter()
-    for _item in session_items:
-        status_counts[_item["Status"]] += 1
-        risk_counts[_item["Risk"]] += 1
+    status_counts: Counter = Counter(item["Status"] for item in session_items)
+    risk_counts: Counter = Counter(item["Risk"] for item in session_items)
     session_pending = status_counts[STATUS_PENDING]
     session_approved = status_counts[STATUS_APPROVED]
     session_overridden = status_counts[STATUS_OVERRIDDEN]
