@@ -777,7 +777,12 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # category="beauty" is a cosmetics product (HS 3304), not a textile scarf (HS 6214).
     # Without this guard the scarf branch fires before the is_cosmetics branch in the
     # elif chain, producing a ~1.5 pp duty error (8% vs 6.5%) and the wrong code.
-    if is_scarf and is_silk and not is_bag and not is_food and not is_perfume and not is_cosmetics:
+    # `not is_leather` mirrors the same guard on the non-silk scarf branch below: a
+    # genuine leather scarf straddles HS 4203 and HS 6214; the correct subheading
+    # requires a customs classification ruling.  Silently emitting HS 621410 for a
+    # silk+leather scarf would be an incorrect declaration, so we fall through to
+    # UNCLASSIFIED to route it to the review queue — identical to the non-silk case.
+    if is_scarf and is_silk and not is_leather and not is_bag and not is_food and not is_perfume and not is_cosmetics:
         return types.MappingProxyType({
             "hs6": "621410",
             "uk_code": "6214100090",
@@ -1340,7 +1345,7 @@ st.session_state.setdefault("last_result", None)
 # Streamlit to discard the widget's stored edit delta, preventing a stale delta
 # from replaying against freshly-updated item statuses after a bulk action rerun.
 st.session_state.setdefault("_review_edit_version", 0)
-# Single-entry audit CSV cache: a (log_count, csv_bytes) tuple or None.
+# Single-entry audit CSV cache: a ((log_count, last_timestamp), csv_bytes) tuple or None.
 # Replacing the old dynamic _audit_csv_{n} pattern that accumulated one session-
 # state key per unique log length and was never evicted, leaking memory on busy
 # sessions.
