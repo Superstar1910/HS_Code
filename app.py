@@ -1625,7 +1625,7 @@ elif page == "Bulk Upload":
             mime="text/csv",
         )
     elif not uploaded:
-        st.caption("Use the sample CSV in the deployment bundle to test bulk processing.")
+        st.caption("Use `sample_products.csv` (included in this repository) to test bulk processing.")
 
 elif page == "Review Queue":
     st.title("Review Queue")
