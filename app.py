@@ -1367,8 +1367,11 @@ if page == "Dashboard":
     session_items = st.session_state["review_items"]
     session_total = len(session_items)
     # Single pass over session_items to build both status and risk counters.
-    status_counts: Counter = Counter(item["Status"] for item in session_items)
-    risk_counts: Counter = Counter(item["Risk"] for item in session_items)
+    status_counts: Counter = Counter()
+    risk_counts: Counter = Counter()
+    for _item in session_items:
+        status_counts[_item["Status"]] += 1
+        risk_counts[_item["Risk"]] += 1
     session_pending = status_counts[STATUS_PENDING]
     session_approved = status_counts[STATUS_APPROVED]
     session_overridden = status_counts[STATUS_OVERRIDDEN]
@@ -1634,8 +1637,11 @@ elif page == "Review Queue":
 
     if items:
         # Single-pass counters for the summary bar shown above the editor.
-        _rq_status: Counter = Counter(item["Status"] for item in items)
-        _rq_risk: Counter = Counter(item["Risk"] for item in items)
+        _rq_status: Counter = Counter()
+        _rq_risk: Counter = Counter()
+        for _rq_item in items:
+            _rq_status[_rq_item["Status"]] += 1
+            _rq_risk[_rq_item["Risk"]] += 1
         _rq_cols = st.columns(5)
         _rq_cols[0].metric("Total", len(items))
         _rq_cols[1].metric("Pending", _rq_status[STATUS_PENDING])
