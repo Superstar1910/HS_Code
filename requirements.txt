@@ -1,4 +1,4 @@
-# Requires Python 3.8+ (walrus operator, from __future__ import annotations)
+# Requires Python 3.8+ (numpy>=1.23.2 dependency; from __future__ import annotations enables modern type syntax)
 streamlit>=1.32.0,<2.0.0
 pandas>=2.0.0,<3.0.0
 numpy>=1.23.2,<3.0.0
