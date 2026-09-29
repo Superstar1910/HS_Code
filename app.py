@@ -330,6 +330,15 @@ def _parse_value(raw) -> tuple[float, str]:
         # producing the less informative "could not be parsed" message.
         if not s:
             return 0.0, " Warning: declared value was missing; defaulted to £0 for risk assessment."
+        # Re-check for a negative sign after stripping the leading '+': a value
+        # like '+−250' (ERP '+' prefix followed by Unicode minus U+2212) or '+–250'
+        # (en dash U+2013) would pass the first negative check above (s[:1] == '+')
+        # and reveal the Unicode sign only after lstrip.  float() raises ValueError
+        # on Unicode minus and en dash, so without this re-check the error path
+        # would return "could not be parsed" instead of the more informative
+        # "negative value" warning.
+        if s[:1] in ('-', '−', '–'):
+            return 0.0, " Warning: declared value was negative; defaulted to £0 for risk assessment."
         # Detect European decimal format: comma followed by 1–2 digits at end,
         # with exactly one comma (e.g. "1.250,00" → "1250.00"). The single-comma
         # guard prevents "1,250,00" (two commas, a common typo) from matching the
@@ -426,7 +435,8 @@ def _parse_value(raw) -> tuple[float, str]:
                 _leading = s[:ci]
                 if not (_leading.isdecimal() and 1 <= len(_leading) <= 3 and int(_leading) != 0):
                     return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
-                if len(s[ci + 1:di]) != 3:
+                _inter = s[ci + 1:di]
+                if not (len(_inter) == 3 and _inter.isdecimal()):
                     return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
             elif comma_count == 1 and dot_count == 0:
                 # Single comma, no decimal point: treat as UK/US thousands separator only
