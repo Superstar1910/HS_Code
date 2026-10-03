@@ -1594,11 +1594,9 @@ elif page == "Bulk Upload":
         # (always available, including in FIPS mode) purely for file-identity dedup.
         try:
             _hex = hashlib.md5(raw_bytes, usedforsecurity=False).hexdigest()
-        except TypeError:
-            try:
-                _hex = hashlib.md5(raw_bytes).hexdigest()
-            except ValueError:
-                _hex = hashlib.sha256(raw_bytes).hexdigest()
+        except (TypeError, ValueError):
+            # TypeError on Python < 3.9 (unknown kwarg); ValueError on FIPS systems.
+            _hex = hashlib.sha256(raw_bytes).hexdigest()
         file_id = (uploaded.name, _hex)
         if st.session_state["_bulk_file_id"] != file_id:
             _process_bulk_upload(raw_bytes, uploaded.name, file_id)
