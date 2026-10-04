@@ -216,7 +216,7 @@ _SCARF_TECHNICAL_RE = re.compile(
     # must also not be suppressed — including ring|rings in the forward alternation
     # would incorrectly route it to UNCLASSIFIED instead of a textile code.
     r'\b(?:scarf|scarfs|scarves)\s+(?:joint|joints|weld|welds|cut|cuts|cutter|cutters|plane|planes|router|routers|bit|bits)\b'
-    r'|\b(?:joint|weld|cut|cutter|cutters|plane|router|routers|bit|bits)\s+(?:scarf|scarfs|scarves)\b'
+    r'|\b(?:joint|joints|weld|welds|cut|cuts|cutter|cutters|plane|planes|router|routers|bit|bits)\s+(?:scarf|scarfs|scarves)\b'
     r'|\bshawl[-\s]+(?:collar|lapel|neckline|neck)\b'
 )
 # Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
