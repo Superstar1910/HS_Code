@@ -119,8 +119,15 @@ _FAUX_SILK_RE = re.compile(
     r'|\bman[-\s]?made[-\s]+silks?\b'
 )
 _FAUX_LEATHER_RE = re.compile(
-    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane|eco|bonded|recycled)[-\s]+leathers?\b'
+    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane|eco|recycled)[-\s]+leathers?\b'
 )
+# "Bonded leather" (also called reconstituted or composition leather, HS 4115.10) is
+# treated as genuine leather by UK customs and attracts the same duty rates as full-grain
+# leather (HS 4202.21/4202.31 at 16%, HS 4203.29 at 3.7%).  It must NOT be suppressed
+# by _FAUX_LEATHER_RE — keeping it there would set is_leather=False and under-declare
+# duty by ~12 pp (e.g. routing a bonded leather wallet to HS 4202.29 at 3.7%
+# instead of HS 4202.31 at 16%).  "bonded" was removed from the faux alternation;
+# _LEATHER_RE and the segment-level faux/genuine checks handle it correctly by default.
 # Explicit "genuine / real / authentic" qualifiers in the same material segment
 # override a co-present faux marker.  This handles supplier material strings that
 # list both materials without a separator, e.g. "genuine leather and faux leather
@@ -209,14 +216,17 @@ _SCARF_TECHNICAL_RE = re.compile(
     # be suppressed even when the bare noun (without "joint") precedes the tool
     # keyword.  Without this addition "scarf cutter" (no "joint") would pass the
     # guard and be misclassified as HS 621490 (textile scarves, 12% duty).
+    # `[-\s]+` used instead of `\s+` so hyphenated woodworking forms such as
+    # "scarf-joint", "scarf-cutter", and "joint-scarf" are also suppressed.
+    # The shawl sub-pattern already used `[-\s]+`; the scarf patterns now match.
     # NOTE: `ring|rings` is absent from BOTH forward and reverse patterns.
     # "ring scarf" / "rings scarf" name a circular textile accessory that IS a
     # genuine scarf and must NOT be suppressed.
     # "scarf ring" is a fashion clasp/holder for scarves (HS 6217 accessory) and
     # must also not be suppressed — including ring|rings in the forward alternation
     # would incorrectly route it to UNCLASSIFIED instead of a textile code.
-    r'\b(?:scarf|scarfs|scarves)\s+(?:joint|joints|weld|welds|cut|cuts|cutter|cutters|plane|planes|router|routers|bit|bits)\b'
-    r'|\b(?:joint|joints|weld|welds|cut|cuts|cutter|cutters|plane|planes|router|routers|bit|bits)\s+(?:scarf|scarfs|scarves)\b'
+    r'\b(?:scarf|scarfs|scarves)[-\s]+(?:joint|joints|weld|welds|cut|cuts|cutter|cutters|plane|planes|router|routers|bit|bits)\b'
+    r'|\b(?:joint|joints|weld|welds|cut|cuts|cutter|cutters|plane|planes|router|routers|bit|bits)[-\s]+(?:scarf|scarfs|scarves)\b'
     r'|\bshawl[-\s]+(?:collar|lapel|neckline|neck)\b'
 )
 # Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
@@ -914,7 +924,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
                 + vat_note + hv_note
             ),
         })
-    elif is_fashion and is_leather and not is_food:
+    elif is_fashion and is_leather and not is_food and not is_scarf:
         # Clothing accessories of genuine or composition leather fall under HS 4203,
         # not under HS 6217 (textile clothing accessories).  Routing leather belts,
         # gloves, brooches, and headbands to HS 6217 is a ~8 pp duty error (12% vs 3.7%).
@@ -924,6 +934,12 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
         # (belts, bandoliers, hatbands, etc.) are HS 4203.29.
         # is_food is redundant here (is_food is checked before is_fashion in the chain)
         # but is kept for defensive clarity against future reordering.
+        # `not is_scarf` guard: both scarf branches above guard `not is_leather` and fall
+        # through to UNCLASSIFIED when is_leather is True, because a genuine leather scarf
+        # straddles HS 4203 (leather accessories) and HS 6214 (textile scarves) and requires
+        # a customs classification ruling.  Without this guard, category="fashion_accessories"
+        # sets is_fashion=True, bypasses both scarf arms, and silently emits HS 4203.29
+        # — contradicting the documented intent and potentially under-declaring duty.
         _is_glove = bool(_GLOVE_RE.search(desc))
         if _is_glove:
             return types.MappingProxyType({
@@ -1160,7 +1176,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         # short-circuits on the first matching column.
         _text_cols_to_check = [c for c in ("description", "material", "origin", "category") if c in df.columns]
         if _text_cols_to_check and any(
-            df[c].astype(str).str.contains("\ufffd", regex=False, na=False).any()
+            df[c].astype(str).str.contains("\ufffd", regex=False).any()
             for c in _text_cols_to_check
         ):
             st.session_state["_bulk_messages"].append(("warning", (
