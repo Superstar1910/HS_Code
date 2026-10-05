@@ -1175,7 +1175,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         st.session_state["_bulk_messages"].append(("error", "CSV format is invalid — check that columns are comma-separated and the file is UTF-8 encoded."))
         return
     except Exception as e:
-        st.session_state["_bulk_messages"].append(("error", f"Failed to read file: {e}"))
+        st.session_state["_bulk_messages"].append(("error", f"Failed to read file: {type(e).__name__}: {e}"))
         return
 
     if len(df) > _MAX_BULK_ROWS:
@@ -1265,7 +1265,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         classified = pd.concat(_chunks, ignore_index=True)
         result_df = pd.concat([input_df, classified], axis=1)
     except Exception as e:
-        st.session_state["_bulk_messages"].append(("error", f"Classification failed: {e}"))
+        st.session_state["_bulk_messages"].append(("error", f"Classification failed: {type(e).__name__}: {e}"))
         return
 
     # Compute error/unclassified masks once; reused for the summary, the queue
@@ -1315,7 +1315,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             "Event": f"Bulk upload: {summary} from '{filename}'",
         })
     except Exception as e:
-        st.session_state["_bulk_messages"].append(("error", f"Failed to summarise classification results: {e}"))
+        st.session_state["_bulk_messages"].append(("error", f"Failed to summarise classification results: {type(e).__name__}: {e}"))
         return
 
     queueable_df = result_df[~(_is_error | _is_unclassified)]
