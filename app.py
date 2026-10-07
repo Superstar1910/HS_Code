@@ -119,15 +119,15 @@ _FAUX_SILK_RE = re.compile(
     r'|\bman[-\s]?made[-\s]+silks?\b'
 )
 _FAUX_LEATHER_RE = re.compile(
-    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane|eco|recycled)[-\s]+leathers?\b'
+    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane|eco)[-\s]+leathers?\b'
 )
-# "Bonded leather" (also called reconstituted or composition leather, HS 4115.10) is
-# treated as genuine leather by UK customs and attracts the same duty rates as full-grain
-# leather (HS 4202.21/4202.31 at 16%, HS 4203.29 at 3.7%).  It must NOT be suppressed
-# by _FAUX_LEATHER_RE — keeping it there would set is_leather=False and under-declare
-# duty by ~12 pp (e.g. routing a bonded leather wallet to HS 4202.29 at 3.7%
-# instead of HS 4202.31 at 16%).  "bonded" was removed from the faux alternation;
-# _LEATHER_RE and the segment-level faux/genuine checks handle it correctly by default.
+# "Bonded leather" and "recycled leather" (both HS 4115.10 composition/reconstituted
+# leather) are treated as genuine leather by UK customs and attract the same duty rates
+# as full-grain leather (HS 4202.21/4202.31 at 16%, HS 4203.29 at 3.7%).  They must NOT
+# be suppressed by _FAUX_LEATHER_RE — keeping either there would set is_leather=False and
+# under-declare duty by ~12 pp (e.g. routing a recycled leather wallet to HS 4202.29 at
+# 3.7% instead of HS 4202.31 at 16%).  "bonded" and "recycled" are omitted from the faux
+# alternation; _LEATHER_RE and the segment-level faux/genuine checks handle them correctly.
 # Explicit "genuine / real / authentic" qualifiers in the same material segment
 # override a co-present faux marker.  This handles supplier material strings that
 # list both materials without a separator, e.g. "genuine leather and faux leather
@@ -960,11 +960,14 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
             "vat": "20%",
             "explanation": "Classified under clothing accessories of leather (HS 4203.29) — belts, bandoliers and similar; verify outer surface is genuine or composition leather." + hv_note,
         })
-    elif is_fashion and not is_food:
+    elif is_fashion and not is_food and not is_scarf:
         # is_food always takes precedence over is_fashion (e.g. category="food" on a
         # "belt" description must route to HS 2106, not HS 6217).  is_food is checked
         # first in the elif chain above, so this guard is redundant in practice but
         # makes the intent explicit and defends against future chain reordering.
+        # `not is_scarf` guard mirrors the same guard on the leather-fashion branch above:
+        # a scarf with category="fashion_accessories" must fall through to UNCLASSIFIED,
+        # not silently receive HS 621790 (textile accessories).
         return types.MappingProxyType({
             "hs6": "621790",
             "uk_code": "6217900000",
