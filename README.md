@@ -35,7 +35,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Requires Python 3.8+ (walrus operator and `from __future__ import annotations`).
+Requires Python 3.8+ (`from __future__ import annotations`; also the effective minimum for NumPy ≥ 1.23 and Pandas ≥ 2.0).
 
 ## CSV format
 
