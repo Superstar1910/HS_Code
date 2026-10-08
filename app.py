@@ -875,9 +875,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
         # is_food guard required: category="food" must win even when a perfume
         # keyword appears in the description (e.g. "natural fragrances food
         # concentrate").  is_scarf and is_bag already carry explicit not-is_food
-        # guards; is_perfume had no such guard and would fire first (line 677 is
-        # before the is_food branch at line 697), mis-assigning HS 3303 / 6.5%
-        # duty instead of HS 2106 / food rate.
+        # guards; is_perfume had no such guard and would fire before the is_food
+        # branch in the elif chain, mis-assigning HS 3303 / 6.5% duty instead
+        # of HS 2106 / food rate.
         return types.MappingProxyType({
             "hs6": "330300",
             "uk_code": "3303001000",
@@ -1172,6 +1172,11 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             low_memory=False,
         )
         df.columns = df.columns.str.strip().str.lower()
+        # Drop duplicate column names that arise when two CSV headers normalise to
+        # the same lowercase string (e.g. "Description" and "DESCRIPTION").  Pandas
+        # silently keeps both; downstream column selection and .to_dict("records")
+        # would then return or discard the wrong copy without any warning.
+        df = df.loc[:, ~df.columns.duplicated(keep="first")]
         # Warn if any cell in the required text columns contains U+FFFD (the Unicode
         # replacement character), which indicates bytes that could not be decoded.
         # Only scan the five required columns: scanning all string columns in a wide
@@ -1307,8 +1312,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             detail_parts.append(f"{unclassified_count} unclassified")
         if error_count:
             detail_parts.append(f"{error_count} error{'s' if error_count != 1 else ''}")
-        row_word = "row" if nrows == 1 else "rows"
-        summary = f"Processed {nrows} {row_word}"
+        summary = f"Processed {nrows} {_row_word}"
         if detail_parts:
             summary += f" ({', '.join(detail_parts)})"
         # Pre-compute the CSV download bytes once at classification time.
@@ -1472,7 +1476,7 @@ elif page == "Classify":
                 "may return UNCLASSIFIED for food or confectionery items — select 'food' for edible products."
             ),
         )
-        value = st.number_input("Declared Value (£)", min_value=0.0, value=250.0, step=1.0)
+        value = st.number_input("Declared Value (£)", min_value=0.0, value=250.0, step=0.01)
 
         if st.button("Run Classification"):
             if not description.strip():
