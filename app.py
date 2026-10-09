@@ -1179,16 +1179,19 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         df = df.loc[:, ~df.columns.duplicated(keep="first")]
         # Warn if any cell in the required text columns contains U+FFFD (the Unicode
         # replacement character), which indicates bytes that could not be decoded.
-        # Only scan the five required columns: scanning all string columns in a wide
-        # CSV wastes time on columns that do not affect classification.  Generator
-        # short-circuits on the first matching column.
+        # Only scan the four classification-relevant columns: scanning all string
+        # columns in a wide CSV wastes time on columns that do not affect
+        # classification.  Collect all affected columns (rather than short-circuiting
+        # on the first) so the warning names every column that needs fixing.
         _text_cols_to_check = [c for c in ("description", "material", "origin", "category") if c in df.columns]
-        if _text_cols_to_check and any(
-            df[c].astype(str).str.contains("\ufffd", regex=False).any()
-            for c in _text_cols_to_check
-        ):
+        _cols_with_replacement = [
+            c for c in _text_cols_to_check
+            if df[c].astype(str).str.contains("\ufffd", regex=False).any()
+        ]
+        if _cols_with_replacement:
+            _col_list = ", ".join(f"'{c}'" for c in _cols_with_replacement)
             st.session_state["_bulk_messages"].append(("warning", (
-                "Some characters in the CSV could not be decoded and have been "
+                f"Some characters in column(s) {_col_list} could not be decoded and have been "
                 "replaced with \ufffd. Re-save the file as UTF-8 to ensure accurate "
                 "classification."
             )))
