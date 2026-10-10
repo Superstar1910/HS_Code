@@ -752,7 +752,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
         and not is_leather and not is_silk and not is_fashion and not is_scarf
         and not is_perfume
     )
-    # Bag detection: fashion_accessories, food, and perfume override bag keywords.
+    # Bag detection: fashion_accessories, food, perfume, and beauty override bag keywords.
     # fashion_accessories: "handbag charm" is an accessory, not a bag.
     # food: "chocolate gift bag" is food, not a handbag — without this guard the
     # is_bag branch fires before is_food and produces an incorrect HS 4202 code.
@@ -765,6 +765,12 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # to HS 3303 (perfume), not HS 4202.  Explicit bag-shaped perfume containers (e.g.
     # a perfume bottle in the shape of a bag) are edge-cases that require manual review
     # regardless, so routing to HS 3303 and flagging for analyst review is the safer default.
+    # beauty/cosmetics: "face cream gift bag" or "skincare gift bag" with category="beauty"
+    # is a cosmetics product (HS 3304, 6.5% duty), not a travel bag (HS 4202, 3.7% duty).
+    # Without this guard elif is_bag fires before elif is_cosmetics in the chain and
+    # under-declares duty by ~2.8 pp.  is_cosmetics requires category_lower=="beauty", so
+    # this guard is redundant for _bag_by_category (category_lower=="bags" and "beauty" are
+    # mutually exclusive), but is required for _bag_by_keyword where category may be "beauty".
     # category="bags" only fires when description keywords do not indicate a fashion
     # accessory, preventing items like belts or scarves from being misrouted to bag
     # HS codes due to a miscategorised or imprecise category field.
@@ -774,7 +780,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # ("belt", "clutch") is also present.  The category path uses the stricter guard
     # (not is_fashion) because category="bags" on an item whose description says only
     # "belt" is likely a data-entry error; the description is the authoritative signal.
-    _bag_by_keyword = _bag_keyword and category_lower != "fashion_accessories" and not is_food and not is_perfume
+    _bag_by_keyword = _bag_keyword and category_lower != "fashion_accessories" and not is_food and not is_perfume and not is_cosmetics
     # `not is_perfume` mirrors the same guard added to _bag_by_keyword: a product
     # with category="bags" but a clear perfume description (e.g. a data-entry error
     # where someone used "bags" for a "cologne gift set") should route to HS 3303,
