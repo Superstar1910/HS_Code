@@ -631,7 +631,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # _GENUINE_LEATHER_RE / _GENUINE_SILK_RE override the faux suppression within a
     # single unseparated segment that mentions both: "genuine leather and faux leather
     # trim" must still be flagged as genuine leather.
-    _mat_segs = [seg.strip() for seg in _MAT_SEP_RE.split(material_lower) if seg.strip()] if material_lower else []
+    _mat_segs = [s for seg in _MAT_SEP_RE.split(material_lower) if (s := seg.strip())] if material_lower else []
     if _mat_segs:
         is_silk = False
         is_leather = False
@@ -667,7 +667,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # category_lower == "beauty" is intentionally NOT included: it is too broad and
     # would misclassify all cosmetics (face creams, lipstick, etc.) as perfumes.
     _free_marker = bool(
-        _FREE_MARKER_RE.search(desc) or _FREE_MARKER_RE.search(material_lower)
+        _FREE_MARKER_RE.search(desc) or (material_lower and _FREE_MARKER_RE.search(material_lower))
     )
     # _FRAGRANCE_NON_PERFUME_RE guards "fragrance candle", "fragrance diffuser",
     # "fragrance oil" etc. from matching the bare "fragrance" alternative in
@@ -684,10 +684,10 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # The override applies to desc only; material_lower suppressor remains unconditional.
     _frag_non_perfume_desc = bool(_FRAGRANCE_NON_PERFUME_RE.search(desc))
     is_perfume = not _free_marker and bool(
-        _PERFUME_RE.search(desc) or _PERFUME_MATERIAL_RE.search(material_lower)
+        _PERFUME_RE.search(desc) or (material_lower and _PERFUME_MATERIAL_RE.search(material_lower))
     ) and not bool(
         (_frag_non_perfume_desc and not _STRONG_PERFUME_PRODUCT_RE.search(desc))
-        or _FRAGRANCE_NON_PERFUME_RE.search(material_lower)
+        or (material_lower and _FRAGRANCE_NON_PERFUME_RE.search(material_lower))
     )
     # Non-fragrance beauty products (skincare, make-up, etc.) fall here.
     is_cosmetics = category_lower == "beauty" and not is_perfume
@@ -768,9 +768,9 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # beauty/cosmetics: "face cream gift bag" or "skincare gift bag" with category="beauty"
     # is a cosmetics product (HS 3304, 6.5% duty), not a travel bag (HS 4202, 3.7% duty).
     # Without this guard elif is_bag fires before elif is_cosmetics in the chain and
-    # under-declares duty by ~2.8 pp.  is_cosmetics requires category_lower=="beauty", so
-    # this guard is redundant for _bag_by_category (category_lower=="bags" and "beauty" are
-    # mutually exclusive), but is required for _bag_by_keyword where category may be "beauty".
+    # under-declares duty by ~2.8 pp.  Both _bag_by_keyword and _bag_by_category carry
+    # this guard; for _bag_by_category it is technically redundant (category_lower=="bags"
+    # and "beauty" are mutually exclusive) but is kept for parity and future-proofing.
     # category="bags" only fires when description keywords do not indicate a fashion
     # accessory, preventing items like belts or scarves from being misrouted to bag
     # HS codes due to a miscategorised or imprecise category field.
@@ -785,7 +785,11 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # with category="bags" but a clear perfume description (e.g. a data-entry error
     # where someone used "bags" for a "cologne gift set") should route to HS 3303,
     # not HS 4202, since elif is_bag fires before elif is_perfume in the chain.
-    _bag_by_category = category_lower == "bags" and not is_fashion and not is_scarf and not is_food and not is_perfume
+    # `not is_cosmetics` is technically redundant here (category_lower=="bags" and
+    # category_lower=="beauty" are mutually exclusive, so is_cosmetics cannot be True
+    # when this branch evaluates).  It is kept for parity with _bag_by_keyword and
+    # to ensure the guard remains correct if the category set ever expands.
+    _bag_by_category = category_lower == "bags" and not is_fashion and not is_scarf and not is_food and not is_perfume and not is_cosmetics
     is_bag = _bag_by_keyword or _bag_by_category
 
     # Scarf detection: food category overrides scarf keywords for consistency with the
