@@ -112,14 +112,18 @@ _PERFUME_MATERIAL_RE = re.compile(
 # material.  These complement the negative-lookahead approach used in _SILK_RE and
 # _LEATHER_RE (which only catch following modifiers like "silk-effect", "leather-look")
 # by also catching constructions like "faux leather", "vegan leather", "PU leather",
-# "synthetic silk" — all of which would otherwise pass through the duty-code upgrade
-# branches and attract the wrong (higher) duty rates.
+# "synthetic silk", "bamboo silk" (bamboo viscose) — all of which would otherwise
+# pass through the duty-code upgrade branches and attract the wrong (higher) duty rates.
+# Novel bio-based leather alternatives (apple, pineapple, mushroom, cactus, cork, bio,
+# bamboo, microfibre) are classified as non-leather (HS 4202.29 at 3.7%, not 16%)
+# because UK customs does not accept them as "leather" for tariff purposes.
 _FAUX_SILK_RE = re.compile(
-    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake)[-\s]+silks?\b'
+    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|bamboo)[-\s]+silks?\b'
     r'|\bman[-\s]?made[-\s]+silks?\b'
 )
 _FAUX_LEATHER_RE = re.compile(
-    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane|eco)[-\s]+leathers?\b'
+    r'\b(?:faux|vegan|synthetic|artificial|imitation|fake|pu|polyurethane|eco'
+    r'|bio|apple|pineapple|mushroom|cactus|cork|bamboo|microfibre|microfiber)[-\s]+leathers?\b'
 )
 # "Bonded leather" and "recycled leather" (both HS 4115.10 composition/reconstituted
 # leather) are treated as genuine leather by UK customs and attract the same duty rates
@@ -1315,6 +1319,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         error_count = int(_is_error.sum())
         unclassified_count = int(_is_unclassified.sum())
         nrows = len(result_df)
+        _row_word = "row" if nrows == 1 else "rows"
         classified_count = nrows - error_count - unclassified_count
         detail_parts = []
         if classified_count < nrows:
