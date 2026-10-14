@@ -220,6 +220,11 @@ _SCARF_TECHNICAL_RE = re.compile(
     # be suppressed even when the bare noun (without "joint") precedes the tool
     # keyword.  Without this addition "scarf cutter" (no "joint") would pass the
     # guard and be misclassified as HS 621490 (textile scarves, 12% duty).
+    # `jointing` added to both forward and reverse alternations: "scarf jointing"
+    # is the gerund/present-participle form of the woodworking technique (e.g.
+    # "scarf jointing tool", "scarf jointing jig").  The noun form "joint" was
+    # already present, but "jointing" is a distinct word token and would otherwise
+    # pass the guard, routing "scarf jointing jig" to HS 621490 at 12% duty.
     # `[-\s]+` used instead of `\s+` so hyphenated woodworking forms such as
     # "scarf-joint", "scarf-cutter", and "joint-scarf" are also suppressed.
     # The shawl sub-pattern already used `[-\s]+`; the scarf patterns now match.
@@ -229,8 +234,8 @@ _SCARF_TECHNICAL_RE = re.compile(
     # "scarf ring" is a fashion clasp/holder for scarves (HS 6217 accessory) and
     # must also not be suppressed — including ring|rings in the forward alternation
     # would incorrectly route it to UNCLASSIFIED instead of a textile code.
-    r'\b(?:scarf|scarfs|scarves)[-\s]+(?:joint|joints|weld|welds|cut|cuts|cutter|cutters|plane|planes|router|routers|bit|bits)\b'
-    r'|\b(?:joint|joints|weld|welds|cut|cuts|cutter|cutters|plane|planes|router|routers|bit|bits)[-\s]+(?:scarf|scarfs|scarves)\b'
+    r'\b(?:scarf|scarfs|scarves)[-\s]+(?:joint|joints|jointing|weld|welds|cut|cuts|cutter|cutters|plane|planes|router|routers|bit|bits)\b'
+    r'|\b(?:joint|joints|jointing|weld|welds|cut|cuts|cutter|cutters|plane|planes|router|routers|bit|bits)[-\s]+(?:scarf|scarfs|scarves)\b'
     r'|\bshawl[-\s]+(?:collar|lapel|neckline|neck)\b'
 )
 # Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
