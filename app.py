@@ -8,6 +8,7 @@ import re
 import types
 from collections import Counter
 from datetime import datetime, timedelta
+from typing import Any
 
 import altair as alt
 import numpy as np
@@ -300,7 +301,7 @@ _MAX_BULK_ROWS = 5000
 _VALID_CATEGORIES = frozenset({"fashion_accessories", "bags", "beauty", "food", "other", ""})
 
 
-def _parse_value(raw) -> tuple[float, str]:
+def _parse_value(raw: Any) -> tuple[float, str]:
     """Convert raw value to (normalised_float, warning_message).
 
     The warning is non-empty only when the raw input was absent or invalid
@@ -533,7 +534,7 @@ def _parse_value(raw) -> tuple[float, str]:
     return round(v, 2), ""
 
 
-def _is_normalised_float(value) -> bool:
+def _is_normalised_float(value: Any) -> bool:
     """Return True when value is already a finite, non-negative number.
 
     Used as a fast-path guard to skip a redundant _parse_value round-trip when
@@ -552,7 +553,7 @@ def _is_normalised_float(value) -> bool:
     return math.isfinite(v) and v >= 0
 
 
-def _normalise_value(value) -> float:
+def _normalise_value(value: Any) -> float:
     """Convert value to a finite, non-negative float rounded to pence."""
     if _is_normalised_float(value):
         return round(float(value), 2)
@@ -560,7 +561,7 @@ def _normalise_value(value) -> float:
     return v
 
 
-def _safe_str(v) -> str:
+def _safe_str(v: Any) -> str:
     """Convert a value to string, returning empty string for NaN/None."""
     if v is None:
         return ""
@@ -580,7 +581,7 @@ def classify_product(
     origin: str,
     category: str,
     value: float | str | int,
-) -> dict:
+) -> dict[str, Any]:
     """Normalise inputs then delegate to the cached implementation."""
     v = _normalise_value(value)
     # _safe_str handles None, np.nan, pd.NA, and all other non-string types that
@@ -1069,7 +1070,7 @@ def classify_row(row: pd.Series) -> pd.Series:
         })
 
 
-def _add_to_review_queue(result: dict) -> None:
+def _add_to_review_queue(result: dict[str, Any]) -> None:
     """Add a classified item to the review queue if not already present.
 
     Deduplicates on (description, high_value_flag, uk_code) so that re-clicking
@@ -1079,12 +1080,13 @@ def _add_to_review_queue(result: dict) -> None:
     Silently ignores ERROR and UNCLASSIFIED items — callers filter these, but
     this guard prevents accidental queue corruption if called directly.
     """
-    # Use `or` so that an explicit None or empty-string uk_code is treated the
-    # same as a missing key — both map to UNCLASSIFIED_CODE and are filtered out.
-    # dict.get(key, default) only uses the default when the key is absent; it
-    # returns None when the key is present with value None, which would bypass
-    # the guard and store an item with "Suggested Code": None in the queue.
-    if (result.get("uk_code") or UNCLASSIFIED_CODE) in {ERROR_CODE, UNCLASSIFIED_CODE}:
+    # `or UNCLASSIFIED_CODE` coerces None and "" to UNCLASSIFIED_CODE so both
+    # absent and explicitly-None uk_code values are caught by the same guard.
+    # dict.get() returns None (not the default) when the key is present with
+    # value None, which is why the plain default form get("uk_code", UNCLASSIFIED)
+    # is insufficient.
+    uk_code = result.get("uk_code") or UNCLASSIFIED_CODE
+    if uk_code in {ERROR_CODE, UNCLASSIFIED_CODE}:
         return
     raw_val = result.get("value", 0.0)
     safe_val = _normalise_value(raw_val)
@@ -1105,7 +1107,7 @@ def _add_to_review_queue(result: dict) -> None:
             # Store the normalised float so the column sorts numerically and
             # renders consistently regardless of how the raw value was supplied.
             "Value (£)": safe_val,
-            "Suggested Code": result.get("uk_code") or UNCLASSIFIED_CODE,
+            "Suggested Code": uk_code,
             "Confidence": _format_confidence(result.get("confidence", 0.0)),
             "Explanation": _safe_str(result.get("explanation", "")),
             # Use `or` rather than dict.get default so an explicit None value
