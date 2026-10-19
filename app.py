@@ -1097,7 +1097,7 @@ def _add_to_review_queue(result: dict[str, Any]) -> None:
     key = (
         _safe_str(result.get("description", "")).strip().lower(),
         safe_val >= HIGH_VALUE_THRESHOLD,
-        _safe_str(result.get("uk_code", "")),
+        uk_code,
     )
     if key not in st.session_state["review_keys"]:
         st.session_state["review_keys"].add(key)
