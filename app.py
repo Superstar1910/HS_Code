@@ -1676,7 +1676,7 @@ elif page == "Bulk Upload":
         st.dataframe(result_df, use_container_width=True)
         # Use pre-computed bytes stored at classification time to avoid an
         # O(n) to_csv().encode() call on every Streamlit rerun.
-        _orig_stem = bulk["filename"].rsplit(".", 1)[0] if "." in bulk["filename"] else bulk["filename"]
+        _orig_stem = bulk["filename"].rsplit(".", 1)[0] or bulk["filename"]
         st.download_button(
             "Download Results CSV",
             data=bulk["csv_bytes"],
