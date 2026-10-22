@@ -1504,13 +1504,13 @@ elif page == "Classify":
         value = st.number_input("Declared Value (£)", min_value=0.0, value=250.0, step=0.01)
 
         if st.button("Run Classification"):
-            if not description.strip():
+            desc_clean = description.strip()
+            if not desc_clean:
                 st.warning("Please enter a product description before classifying.")
                 # Clear the previous result so the stale card below the warning
                 # is not mistaken for the outcome of this (invalid) button press.
                 st.session_state["last_result"] = None
             else:
-                desc_clean = description.strip()
                 mat_clean = material.strip()
                 orig_clean = origin.strip().upper()
                 ts = datetime.now().isoformat(timespec="microseconds")
