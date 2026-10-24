@@ -366,7 +366,6 @@ def _parse_value(raw: Any) -> tuple[float, str]:
         # commas as UK/US thousands separators (e.g. "1,250.00" → "1250.00").
         comma_count = s.count(',')
         dot_count = s.count('.')
-        euro_tail = _EURO_DECIMAL_RE.search(s)
         if comma_count > 1:
             # Multiple commas are valid as UK/US thousands separators only when
             # every inter-comma group is exactly 3 digits and the leading group
@@ -415,7 +414,7 @@ def _parse_value(raw: Any) -> tuple[float, str]:
                 s = s.replace('.', '')
             else:
                 return 0.0, " Warning: declared value format is ambiguous (mixed dot groups); defaulted to £0 for risk assessment."
-        elif euro_tail and comma_count == 1:
+        elif comma_count == 1 and _EURO_DECIMAL_RE.search(s):
             # Genuine European decimal format: integer part may contain dots only
             # as thousands separators, where each dot-separated group is exactly
             # 3 digits (e.g. "1.250,00" → 1250.00, "1.250.000,99" → 1250000.99).
@@ -440,15 +439,15 @@ def _parse_value(raw: Any) -> tuple[float, str]:
             s = s.replace('.', '').replace(',', '.')
         else:
             # UK/US path: commas are thousands separators.  Warn on two non-standard
-            # patterns: (a) dot-before-comma without a recognised Euro decimal tail
-            # (e.g. "1.250,000" — euro_tail only catches 1-2 digit tails, so a
-            # 3-digit tail like ",000" falls through here); (b) comma-before-dot with
-            # a non-3-digit inter-separator group (e.g. "1,50.00").
+            # patterns: (a) dot-before-comma without a recognised Euro decimal suffix
+            # (e.g. "1.250,000" — the Euro decimal pattern only catches 1-2 digit
+            # tails, so a 3-digit tail like ",000" falls through here); (b)
+            # comma-before-dot with a non-3-digit inter-separator group (e.g. "1,50.00").
             if comma_count == 1 and dot_count == 1:
                 ci = s.index(',')
                 di = s.index('.')
                 if di < ci:
-                    # Dot precedes comma without a matching euro_tail — ambiguous.
+                    # Dot precedes comma without a matching Euro decimal suffix — ambiguous.
                     return 0.0, " Warning: declared value format is ambiguous (dot before comma without standard decimal suffix); defaulted to £0 for risk assessment."
                 # Leading group must be 1–3 non-zero digits (e.g. "1,250.00" is valid;
                 # "1234,567.89" has a 4-digit leading group and is non-standard).
