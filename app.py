@@ -606,7 +606,7 @@ def classify_product(
 
 
 @functools.lru_cache(maxsize=_CACHE_MAX_SIZE)
-def _classify_product_cached(desc, material_lower, category_lower, high_value) -> types.MappingProxyType:
+def _classify_product_cached(desc: str, material_lower: str, category_lower: str, high_value: bool) -> types.MappingProxyType:
     # high_value is a bool; using it instead of the raw value means products that
     # share the same description/material/category and the same high-value status
     # hit the same cache entry regardless of exact declared price.  Origin is NOT
@@ -640,7 +640,7 @@ def _classify_product_cached(desc, material_lower, category_lower, high_value) -
     # _GENUINE_LEATHER_RE / _GENUINE_SILK_RE override the faux suppression within a
     # single unseparated segment that mentions both: "genuine leather and faux leather
     # trim" must still be flagged as genuine leather.
-    _mat_segs = [_s for seg in _MAT_SEP_RE.split(material_lower) if (_s := seg.strip())] if material_lower else []
+    _mat_segs = [s for s in (seg.strip() for seg in _MAT_SEP_RE.split(material_lower)) if s] if material_lower else []
     if _mat_segs:
         is_silk = False
         is_leather = False
@@ -1124,8 +1124,10 @@ def _apply_bulk_review(new_status: str, audit_event: str, toast_msg: str, toast_
     skipped_unclassified = 0
     for item in st.session_state["review_items"]:
         if item["Status"] == STATUS_PENDING:
-            # Never bulk-action items with no assigned code; they require manual
-            # code entry before either approval or override.
+            # Defensive guard: _add_to_review_queue already prevents UNCLASSIFIED/ERROR
+            # items from entering the queue, so this branch is unreachable in normal
+            # operation.  It is kept as a belt-and-suspenders guard against direct
+            # session-state mutation bypassing _add_to_review_queue.
             if item.get("Suggested Code", UNCLASSIFIED_CODE) in {UNCLASSIFIED_CODE, ERROR_CODE}:
                 skipped_unclassified += 1
                 continue
@@ -1367,21 +1369,22 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
 
     queueable_df = result_df[~(_is_error | _is_unclassified)]
     _queue_changed = False
-    try:
-        queue_before = len(st.session_state["review_items"])
-        for row in queueable_df[_BULK_QUEUE_COLS_LIST].to_dict("records"):
-            _add_to_review_queue({
-                "description": _safe_str(row.get("description", "")),
-                "material": _safe_str(row.get("material", "")),
-                "value": row.get("value", 0.0),
-                "uk_code": _safe_str(row.get("uk_code", "")),
-                "confidence": row.get("confidence", 0.0),
-                "explanation": _safe_str(row.get("explanation", "")),
-                "risk": _safe_str(row.get("risk")) or RISK_AMBER,
-            })
-        _queue_changed = len(st.session_state["review_items"]) > queue_before
-    except Exception as e:
-        st.session_state["_bulk_messages"].append(("warning", f"Review queue could not be fully populated: {e}"))
+    if not queueable_df.empty:
+        try:
+            queue_before = len(st.session_state["review_items"])
+            for row in queueable_df[_BULK_QUEUE_COLS_LIST].to_dict("records"):
+                _add_to_review_queue({
+                    "description": _safe_str(row.get("description", "")),
+                    "material": _safe_str(row.get("material", "")),
+                    "value": row.get("value", 0.0),
+                    "uk_code": _safe_str(row.get("uk_code", "")),
+                    "confidence": row.get("confidence", 0.0),
+                    "explanation": _safe_str(row.get("explanation", "")),
+                    "risk": _safe_str(row.get("risk")) or RISK_AMBER,
+                })
+            _queue_changed = len(st.session_state["review_items"]) > queue_before
+        except Exception as e:
+            st.session_state["_bulk_messages"].append(("warning", f"Review queue could not be fully populated: {e}"))
     # Invalidate the Review Queue data_editor only when new items were actually
     # added — an unchanged queue does not need the widget reset, which would
     # discard in-progress edits without cause.
