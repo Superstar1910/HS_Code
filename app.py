@@ -1327,7 +1327,6 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         error_count = int(_is_error.sum())
         unclassified_count = int(_is_unclassified.sum())
         nrows = len(result_df)
-        _row_word = "row" if nrows == 1 else "rows"
         classified_count = nrows - error_count - unclassified_count
         detail_parts = []
         if classified_count < nrows:
@@ -1802,6 +1801,8 @@ elif page == "Review Queue":
                 })
                 st.toast(f"Queue cleared — {cleared_count} item(s) removed.", icon="🗑️")
                 st.rerun()
+            else:
+                st.toast("Review queue is already empty.", icon="ℹ️")
     else:
         st.info("No items in the review queue. Classify a product first or use Bulk Upload.")
 
