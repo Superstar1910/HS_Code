@@ -1790,19 +1790,16 @@ elif page == "Review Queue":
         st.write("")
         if st.button("🗑️ Clear Queue", help="Remove all items from the review queue. This cannot be undone."):
             cleared_count = len(st.session_state["review_items"])
-            if cleared_count:
-                st.session_state["review_items"].clear()
-                st.session_state["review_keys"].clear()
-                st.session_state["_review_edit_version"] += 1
-                ts = datetime.now().isoformat(timespec="microseconds")
-                st.session_state["audit_log"].append({
-                    "Timestamp": ts,
-                    "Event": f"Review Queue cleared: {cleared_count} item(s) removed.",
-                })
-                st.toast(f"Queue cleared — {cleared_count} item(s) removed.", icon="🗑️")
-                st.rerun()
-            else:
-                st.toast("Review queue is already empty.", icon="ℹ️")
+            st.session_state["review_items"].clear()
+            st.session_state["review_keys"].clear()
+            st.session_state["_review_edit_version"] += 1
+            ts = datetime.now().isoformat(timespec="microseconds")
+            st.session_state["audit_log"].append({
+                "Timestamp": ts,
+                "Event": f"Review Queue cleared: {cleared_count} item(s) removed.",
+            })
+            st.toast(f"Queue cleared — {cleared_count} item(s) removed.", icon="🗑️")
+            st.rerun()
     else:
         st.info("No items in the review queue. Classify a product first or use Bulk Upload.")
 
