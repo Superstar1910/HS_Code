@@ -623,7 +623,14 @@ def _classify_product_cached(desc: str, material_lower: str, category_lower: str
     # "scarf joint cutter") and garment-construction uses of "shawl" (e.g.
     # "shawl collar blazer", "shawl lapel jacket") — neither are textile articles
     # and both must not route to HS 6214 (scarves, 12% duty).
-    is_scarf = bool(_SCARF_RE.search(desc) and not _SCARF_TECHNICAL_RE.search(desc))
+    # _scarf_technical is tracked separately so the is_fashion branches can also
+    # guard against it: when a scarf/shawl word was present but suppressed (e.g.
+    # "shawl collar blazer" with category="fashion_accessories"), routing to
+    # HS 621790 is just as wrong as routing to HS 621410 — the item should remain
+    # UNCLASSIFIED for manual review regardless of the category field.
+    _scarf_raw = bool(_SCARF_RE.search(desc))
+    _scarf_technical = _scarf_raw and bool(_SCARF_TECHNICAL_RE.search(desc))
+    is_scarf = _scarf_raw and not _scarf_technical
     # Material is the authoritative source for composition.  Only fall back to
     # description when the material field was not supplied, so that terms like
     # "silk-effect polyester" or "leather-look PU" in a description do not
@@ -953,7 +960,7 @@ def _classify_product_cached(desc: str, material_lower: str, category_lower: str
                 + vat_note + hv_note
             ),
         })
-    elif is_fashion and is_leather and not is_food and not is_scarf:
+    elif is_fashion and is_leather and not is_food and not is_scarf and not _scarf_technical:
         # Clothing accessories of genuine or composition leather fall under HS 4203,
         # not under HS 6217 (textile clothing accessories).  Routing leather belts,
         # gloves, brooches, and headbands to HS 6217 is a ~8 pp duty error (12% vs 3.7%).
@@ -969,6 +976,8 @@ def _classify_product_cached(desc: str, material_lower: str, category_lower: str
         # a customs classification ruling.  Without this guard, category="fashion_accessories"
         # sets is_fashion=True, bypasses both scarf arms, and silently emits HS 4203.29
         # — contradicting the documented intent and potentially under-declaring duty.
+        # `not _scarf_technical`: mirrors the same reasoning — a suppressed scarf keyword
+        # (e.g. "shawl collar blazer") must fall through to UNCLASSIFIED, not HS 4203.
         _is_glove = bool(_GLOVE_RE.search(desc))
         if _is_glove:
             return types.MappingProxyType({
@@ -989,7 +998,7 @@ def _classify_product_cached(desc: str, material_lower: str, category_lower: str
             "vat": "20%",
             "explanation": "Classified under clothing accessories of leather (HS 4203.29) — belts, bandoliers and similar; verify outer surface is genuine or composition leather." + hv_note,
         })
-    elif is_fashion and not is_food and not is_scarf:
+    elif is_fashion and not is_food and not is_scarf and not _scarf_technical:
         # is_food always takes precedence over is_fashion (e.g. category="food" on a
         # "belt" description must route to HS 2106, not HS 6217).  is_food is checked
         # first in the elif chain above, so this guard is redundant in practice but
@@ -997,6 +1006,9 @@ def _classify_product_cached(desc: str, material_lower: str, category_lower: str
         # `not is_scarf` guard mirrors the same guard on the leather-fashion branch above:
         # a scarf with category="fashion_accessories" must fall through to UNCLASSIFIED,
         # not silently receive HS 621790 (textile accessories).
+        # `not _scarf_technical`: a suppressed scarf/shawl keyword (e.g. "shawl collar
+        # blazer") must also fall through to UNCLASSIFIED; routing it to HS 621790 is
+        # equally wrong regardless of whether is_silk/is_leather is set.
         return types.MappingProxyType({
             "hs6": "621790",
             "uk_code": "6217900000",
