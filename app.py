@@ -239,6 +239,15 @@ _SCARF_TECHNICAL_RE = re.compile(
     r'|\b(?:joint|joints|jointing|weld|welds|cut|cuts|cutter|cutters|plane|planes|router|routers|bit|bits)[-\s]+(?:scarf|scarfs|scarves)\b'
     r'|\bshawl[-\s]+(?:collar|lapel|neckline|neck)\b'
 )
+# "Scarf ring" / "scarves ring" names a fashion clasp or holder worn to secure or
+# style a scarf — it is a clothing accessory (HS 6217.90), not a scarf (HS 6214).
+# Only the "scarf/scarves BEFORE ring/rings" word order is matched: "ring scarf"
+# names an infinity/circular scarf (a genuine scarf) and must NOT be suppressed.
+# Unlike _SCARF_TECHNICAL_RE (which also prevents the fashion branch by setting
+# _scarf_technical=True and triggering `not _scarf_technical` guards), this pattern
+# only suppresses is_scarf, leaving the fashion branch free to fire and route to
+# HS 621790.
+_SCARF_RING_RE = re.compile(r'\b(?:scarf|scarves)[-\s]+rings?\b')
 # Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
 # "leather-look", "leather-feel", etc. which describe synthetic imitations rather
 # than the genuine material, preventing false duty-code upgrades for polyester/PU goods.
@@ -630,7 +639,13 @@ def _classify_product_cached(desc: str, material_lower: str, category_lower: str
     # UNCLASSIFIED for manual review regardless of the category field.
     _scarf_raw = bool(_SCARF_RE.search(desc))
     _scarf_technical = _scarf_raw and bool(_SCARF_TECHNICAL_RE.search(desc))
-    is_scarf = _scarf_raw and not _scarf_technical
+    # _SCARF_RING_RE matches "scarf ring" / "scarves ring" (a fashion clasp, HS 6217)
+    # but NOT "ring scarf" (an infinity scarf, HS 6214).  Setting is_scarf=False for
+    # these descriptions lets the fashion branch fire (HS 621790) rather than the
+    # scarf branch (HS 621490).  _scarf_technical is not set, so the fashion branch
+    # is not additionally blocked — the item is a legitimate clothing accessory.
+    _scarf_ring = _scarf_raw and bool(_SCARF_RING_RE.search(desc))
+    is_scarf = _scarf_raw and not _scarf_technical and not _scarf_ring
     # Material is the authoritative source for composition.  Only fall back to
     # description when the material field was not supplied, so that terms like
     # "silk-effect polyester" or "leather-look PU" in a description do not
