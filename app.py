@@ -146,7 +146,16 @@ _GENUINE_SILK_RE = re.compile(r'\b(?:genuine|real|authentic)[-\s]+silks?\b')
 # Coin purse: both hyphenated and spaced forms are matched ("coin-purse", "coin purse").
 # Non-leather coin purses (textile/plastic outer) attract 4202.32 instead, but they
 # never reach this branch (is_leather is False for them) and route to elif is_bag.
-_WALLET_RE = re.compile(r'\bwallets?\b|\bcoin[-\s]+purses?\b')
+# billfold: American English synonym for a flat wallet (HS 4202.31).
+# card holder / cardholder / card case: small articles designed to carry business or
+# payment cards are HS 4202.31 small leather articles, not HS 4202.21 handbags.
+_WALLET_RE = re.compile(
+    r'\bwallets?\b'
+    r'|\bcoin[-\s]+purses?\b'
+    r'|\bbillfolds?\b'
+    r'|\bcardholders?\b'
+    r'|\bcard[-\s]+(?:holder|holders|case|cases|wallet|wallets|purse|purses)\b'
+)
 # Matches gloves and mittens for the HS 4203.20 sub-branch of leather fashion
 # accessories.  "glove"/"gloves" are also in _FASHION_RE; the separate pattern
 # lets the leather-accessories branch distinguish HS 4203.20 (gloves) from
@@ -260,6 +269,10 @@ _LEATHER_RE = re.compile(r'\bleathers?\b(?![-\s]+(?:look(?:ing)?|like|effect|fee
 # "50% cotton / 50% polyester") are common in supplier data exports and must
 # be split so per-segment faux/genuine-material detection works correctly.
 _MAT_SEP_RE = re.compile(r'[,;/]')
+# ISO 3166-1 alpha-2: exactly two ASCII letters.  Used to warn operators when the
+# origin field contains a country name or non-standard abbreviation (e.g. "Italy",
+# "UK", "CHN") rather than the two-letter code required on UK customs declarations.
+_ORIGIN_ALPHA2_RE = re.compile(r'^[A-Za-z]{2}$')
 
 # Threshold at or above which items attract additional customs scrutiny
 HIGH_VALUE_THRESHOLD = 1000.0
@@ -596,11 +609,17 @@ def classify_product(
     # (x or "") does not: np.nan is truthy, so (np.nan or "") returns np.nan and
     # np.nan.strip() raises AttributeError; pd.NA raises TypeError on boolean eval.
     origin_upper = _safe_str(origin).strip().upper()
-    origin_note = (
-        f" Country of origin: {origin_upper}."
-        if origin_upper
-        else " Warning: country of origin not declared — required for customs clearance."
-    )
+    if not origin_upper:
+        origin_note = " Warning: country of origin not declared — required for customs clearance."
+    elif not _ORIGIN_ALPHA2_RE.match(origin_upper):
+        # Non-standard: country name ("Italy"), 3-letter code ("CHN"), or common
+        # unofficial abbreviation ("UK" — the ISO code for United Kingdom is "GB").
+        origin_note = (
+            f" Warning: country of origin '{origin_upper}' does not appear to be a valid"
+            " ISO 3166-1 alpha-2 code (two letters, e.g. GB, DE, CN) — verify before submission."
+        )
+    else:
+        origin_note = f" Country of origin: {origin_upper}."
     # Return a shallow copy so callers cannot mutate the lru_cache entry.
     # Origin is handled here (outside the cache) so products from different countries
     # with identical descriptions/materials/categories share the same cache entry.
