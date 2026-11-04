@@ -784,21 +784,29 @@ def _classify_product_cached(desc: str, material_lower: str, category_lower: str
     # This prevents "chocolate-coloured sofa" (category: furniture) and
     # "chocolate gift bag" (category: bags) from being misclassified as food.
     # When category is blank, genuine-material signals (is_leather, is_silk),
-    # fashion-item keywords (is_fashion), scarf/shawl keywords (is_scarf), and
+    # fashion-item keywords (is_fashion), scarf/shawl keywords (_scarf_raw), and
     # bag-type keywords (_bag_keyword) also suppress confectionery food classification:
     # colour/texture names like "fudge brown", "toffee", and "chocolate" appear
     # routinely in fashion, textile, and bag product descriptions ("chocolate wallet",
     # "toffee belt", "toffee scarf") and should not override a clear product-type
     # signal.  _SCARF_RE is not a subset of _FASHION_RE (scarves are detected
-    # separately), so is_scarf must be listed here explicitly to prevent "toffee
+    # separately), so _scarf_raw must be listed here explicitly to prevent "toffee
     # scarf" / "fudge shawl" with blank category from being routed to food (HS 210690,
-    # 0% VAT) instead of scarves (HS 6214, 12% duty).  Similarly, _BAG_RE terms
-    # such as "wallet" are unambiguous container-product signals that must not be
-    # overridden by a confectionery colour descriptor — "chocolate wallet" with blank
-    # category must route to the bag branch (HS 4202), not food.  When category="food"
-    # is set explicitly, the first path (category_lower == "food") fires regardless of
-    # bag keywords, so that "chocolate gift bag" with category="food" still routes to
-    # HS 2106 as intended.
+    # 0% VAT) instead of scarves (HS 6214, 12% duty).
+    # _scarf_raw (not is_scarf) is used here because is_scarf is False when
+    # _scarf_technical or _scarf_ring suppresses it.  Using is_scarf would leave a
+    # loophole: "chocolate scarf joint cutter" (_scarf_technical=True, is_scarf=False)
+    # and "chocolate scarf ring" (_scarf_ring=True, is_scarf=False) would pass the
+    # `not is_scarf` guard and be misclassified as food (HS 2106) based solely on a
+    # confectionery colour word.  Any scarf/shawl word in the description — whether
+    # it names a textile, a woodworking joint, or a clasp — is a non-food signal that
+    # must suppress the confectionery→food path.
+    # Similarly, _BAG_RE terms such as "wallet" are unambiguous container-product
+    # signals that must not be overridden by a confectionery colour descriptor —
+    # "chocolate wallet" with blank category must route to the bag branch (HS 4202),
+    # not food.  When category="food" is set explicitly, the first path
+    # (category_lower == "food") fires regardless of bag keywords, so that
+    # "chocolate gift bag" with category="food" still routes to HS 2106 as intended.
     # category="food" always wins regardless of other flags.
     # is_perfume is excluded from the confectionery keyword path: "chocolate
     # perfume", "truffle cologne", "caramel eau de parfum", etc. with a blank
@@ -808,7 +816,7 @@ def _classify_product_cached(desc: str, material_lower: str, category_lower: str
     # item is incorrectly classified as food at the wrong duty/VAT rates.
     is_food = category_lower == "food" or (
         is_confectionery and _no_category
-        and not is_leather and not is_silk and not is_fashion and not is_scarf
+        and not is_leather and not is_silk and not is_fashion and not _scarf_raw
         and not is_perfume
         and not _bag_keyword
     )
