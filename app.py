@@ -1899,13 +1899,19 @@ elif page == "Audit Trail":
     _audit_cache_key = (_audit_len, _audit_last_ts)
     _cached_audit = st.session_state["_audit_csv_cache"]
     if _cached_audit is None or _cached_audit[0] != _audit_cache_key:
-        _audit_csv_bytes = logs.to_csv(index=False).encode("utf-8-sig")
-        st.session_state["_audit_csv_cache"] = (_audit_cache_key, _audit_csv_bytes)
+        try:
+            _audit_csv_bytes = logs.to_csv(index=False).encode("utf-8-sig")
+        except Exception as _csv_exc:
+            st.error(f"Could not generate audit log download: {type(_csv_exc).__name__}: {_csv_exc}")
+            _audit_csv_bytes = None
+        else:
+            st.session_state["_audit_csv_cache"] = (_audit_cache_key, _audit_csv_bytes)
     else:
         _audit_csv_bytes = _cached_audit[1]
-    st.download_button(
-        "Download Audit Log CSV",
-        data=_audit_csv_bytes,
-        file_name="audit_log.csv",
-        mime="text/csv",
-    )
+    if _audit_csv_bytes is not None:
+        st.download_button(
+            "Download Audit Log CSV",
+            data=_audit_csv_bytes,
+            file_name="audit_log.csv",
+            mime="text/csv",
+        )
