@@ -256,7 +256,7 @@ _SCARF_TECHNICAL_RE = re.compile(
 # _scarf_technical=True and triggering `not _scarf_technical` guards), this pattern
 # only suppresses is_scarf, leaving the fashion branch free to fire and route to
 # HS 621790.
-_SCARF_RING_RE = re.compile(r'\b(?:scarf|scarves)[-\s]+rings?\b')
+_SCARF_RING_RE = re.compile(r'\b(?:scarf|scarfs|scarves)[-\s]+rings?\b')
 # Negative-lookahead excludes compound modifiers such as "silk-effect", "silk-like",
 # "leather-look", "leather-feel", etc. which describe synthetic imitations rather
 # than the genuine material, preventing false duty-code upgrades for polyester/PU goods.
