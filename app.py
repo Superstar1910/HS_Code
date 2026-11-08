@@ -408,6 +408,7 @@ def _parse_value(raw: Any) -> tuple[float, str]:
                 _mparts0.isdecimal()
                 and 1 <= len(_mparts0) <= 3
                 and int(_mparts0) != 0   # "0,000,000" is not a valid UK/US large-number format
+                and not (len(_mparts0) > 1 and _mparts0[0] == '0')  # "01,xxx,xxx" has a non-standard leading zero
                 and all(len(p) == 3 and p.isdecimal() for p in _mparts[1:-1])
                 and len(_last_base) == 3
                 and _last_base.isdecimal()
@@ -431,6 +432,7 @@ def _parse_value(raw: Any) -> tuple[float, str]:
                 parts[0].isdecimal()
                 and len(parts[0]) <= 3
                 and int(parts[0]) != 0   # "0.000.000" is not a valid European thousands format
+                and not (len(parts[0]) > 1 and parts[0][0] == '0')  # "01.xxx.xxx" has a non-standard leading zero
                 and all(len(p) == 3 and p.isdecimal() for p in parts[1:])
             ):
                 s = s.replace('.', '')
@@ -471,10 +473,12 @@ def _parse_value(raw: Any) -> tuple[float, str]:
                 if di < ci:
                     # Dot precedes comma without a matching Euro decimal suffix — ambiguous.
                     return 0.0, " Warning: declared value format is ambiguous (dot before comma without standard decimal suffix); defaulted to £0 for risk assessment."
-                # Leading group must be 1–3 non-zero digits (e.g. "1,250.00" is valid;
-                # "1234,567.89" has a 4-digit leading group and is non-standard).
+                # Leading group must be 1–3 non-zero digits with no leading zero
+                # (e.g. "1,250.00" is valid; "1234,567.89" has a 4-digit leading group;
+                # "01,250.00" has a leading zero — both are non-standard).
                 _leading = s[:ci]
-                if not (_leading.isdecimal() and 1 <= len(_leading) <= 3 and int(_leading) != 0):
+                if not (_leading.isdecimal() and 1 <= len(_leading) <= 3 and int(_leading) != 0
+                        and not (len(_leading) > 1 and _leading[0] == '0')):
                     return 0.0, " Warning: declared value format is ambiguous (non-standard digit grouping); defaulted to £0 for risk assessment."
                 _inter = s[ci + 1:di]
                 if not (len(_inter) == 3 and _inter.isdecimal()):
@@ -492,6 +496,7 @@ def _parse_value(raw: Any) -> tuple[float, str]:
                     _leading.isdecimal()
                     and 1 <= len(_leading) <= 3
                     and int(_leading) != 0
+                    and not (len(_leading) > 1 and _leading[0] == '0')  # "01,xxx" is non-standard
                     and _trailing.isdecimal()
                     and len(_trailing) == 3
                 ):
@@ -681,7 +686,7 @@ def _classify_product_cached(desc: str, material_lower: str, category_lower: str
     # _GENUINE_LEATHER_RE / _GENUINE_SILK_RE override the faux suppression within a
     # single unseparated segment that mentions both: "genuine leather and faux leather
     # trim" must still be flagged as genuine leather.
-    _mat_segs = [s for s in (seg.strip() for seg in _MAT_SEP_RE.split(material_lower)) if s] if material_lower else []
+    _mat_segs = [_seg for _seg in (s.strip() for s in _MAT_SEP_RE.split(material_lower)) if _seg] if material_lower else []
     if _mat_segs:
         is_silk = False
         is_leather = False
