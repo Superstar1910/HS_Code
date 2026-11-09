@@ -457,6 +457,10 @@ def _parse_value(raw: Any) -> tuple[float, str]:
                     # is never emitted by any standard ERP) and must be flagged as
                     # ambiguous rather than silently parsed as 250.99.
                     and int(int_segs[0]) != 0
+                    # Mirror the multi-comma and multi-dot branch guards: "01.250,99"
+                    # has a non-standard leading zero in the first thousands group
+                    # and must also be rejected as ambiguous.
+                    and not (len(int_segs[0]) > 1 and int_segs[0][0] == '0')
                     and all(len(p) == 3 and p.isdecimal() for p in int_segs[1:])
                 ):
                     return 0.0, " Warning: declared value format is ambiguous (non-standard European notation); defaulted to £0 for risk assessment."
