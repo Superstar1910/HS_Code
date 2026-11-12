@@ -1421,7 +1421,7 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
         # NOTE: bulk_result and audit_log are set AFTER to_csv() succeeds so
         # that a MemoryError or encoding failure leaves neither a stale result
         # nor a misleading "Processed N rows" audit entry.
-        result_csv_bytes = result_df.to_csv(index=False).encode("utf-8-sig")
+        result_csv_bytes = result_df.to_csv(index=False, lineterminator="\r\n").encode("utf-8-sig")
         st.session_state["bulk_result"] = {
             "df": result_df,
             "csv_bytes": result_csv_bytes,
@@ -1463,6 +1463,45 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
     if _queue_changed:
         st.session_state["_review_edit_version"] += 1
     # _bulk_file_id was already set at the top of this function.
+
+
+def _make_risk_chart(risk_df: pd.DataFrame) -> alt.Chart:
+    """Build a colour-coded bar chart from a risk-distribution DataFrame."""
+    return (
+        alt.Chart(risk_df)
+        .mark_bar()
+        .encode(
+            x=alt.X(
+                "Risk:N",
+                sort=[RISK_GREEN, RISK_AMBER, RISK_RED],
+                title="Risk Level",
+                axis=alt.Axis(labelAngle=0),
+            ),
+            y=alt.Y("Count:Q", title="Number of Items"),
+            color=alt.Color(
+                "Risk:N",
+                scale=alt.Scale(
+                    domain=[RISK_GREEN, RISK_AMBER, RISK_RED],
+                    range=["#27ae60", "#f39c12", "#e74c3c"],
+                ),
+                legend=None,
+            ),
+            tooltip=[
+                alt.Tooltip("Risk:N", title="Risk"),
+                alt.Tooltip("Count:Q", title="Items", format=","),
+            ],
+        )
+        .properties(height=320)
+    )
+
+
+@st.cache_data
+def _make_demo_risk_chart() -> alt.Chart:
+    """Return the fixed demo risk chart; cached to avoid rebuilding on every rerun."""
+    risk_df = pd.DataFrame(
+        {"Risk": [RISK_GREEN, RISK_AMBER, RISK_RED], "Count": [9710, 2140, 600]}
+    )
+    return _make_risk_chart(risk_df)
 
 
 # Initialise session state keys once so all pages can rely on them existing.
@@ -1522,40 +1561,15 @@ if page == "Dashboard":
             {"Risk": [RISK_GREEN, RISK_AMBER, RISK_RED],
              "Count": [risk_counts[RISK_GREEN], risk_counts[RISK_AMBER], risk_counts[RISK_RED]]},
         )
+        _risk_chart = _make_risk_chart(risk_df)
     else:
         st.subheader("Session Risk Distribution (Demo)")
         st.info("No classifications yet this session. The chart below shows illustrative demo data.")
-        risk_df = pd.DataFrame({"Risk": [RISK_GREEN, RISK_AMBER, RISK_RED], "Count": [9710, 2140, 600]})
+        _risk_chart = _make_demo_risk_chart()
     # Altair gives each bar the semantically correct risk colour instead of the
     # default Streamlit palette, which renders all bars identically and gives
     # no visual risk signal.  altair is listed as an explicit dependency in
     # requirements.txt (Streamlit made it optional from v1.31 onward).
-    _risk_chart = (
-        alt.Chart(risk_df)
-        .mark_bar()
-        .encode(
-            x=alt.X(
-                "Risk:N",
-                sort=[RISK_GREEN, RISK_AMBER, RISK_RED],
-                title="Risk Level",
-                axis=alt.Axis(labelAngle=0),
-            ),
-            y=alt.Y("Count:Q", title="Number of Items"),
-            color=alt.Color(
-                "Risk:N",
-                scale=alt.Scale(
-                    domain=[RISK_GREEN, RISK_AMBER, RISK_RED],
-                    range=["#27ae60", "#f39c12", "#e74c3c"],
-                ),
-                legend=None,
-            ),
-            tooltip=[
-                alt.Tooltip("Risk:N", title="Risk"),
-                alt.Tooltip("Count:Q", title="Items", format=","),
-            ],
-        )
-        .properties(height=320)
-    )
     st.altair_chart(_risk_chart, use_container_width=True)
 
 elif page == "Classify":
@@ -1909,7 +1923,7 @@ elif page == "Audit Trail":
     _cached_audit = st.session_state["_audit_csv_cache"]
     if _cached_audit is None or _cached_audit[0] != _audit_cache_key:
         try:
-            _audit_csv_bytes = logs.to_csv(index=False).encode("utf-8-sig")
+            _audit_csv_bytes = logs.to_csv(index=False, lineterminator="\r\n").encode("utf-8-sig")
         except Exception as _csv_exc:
             st.error(f"Could not generate audit log download: {type(_csv_exc).__name__}: {_csv_exc}")
             _audit_csv_bytes = None
