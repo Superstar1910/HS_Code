@@ -331,12 +331,10 @@ def _parse_value(raw: Any) -> tuple[float, str]:
     Handles common CSV formats: "£1,250.00", "$500", "1,000.50",
     "GBP 250", "250 USD", "EUR1250,00", "1,250,000", "£12,345,678.90".
     """
-    # bool / np.bool_ subclass int, so float(True)==1.0 would silently produce a
-    # misleading £1 value.  Catch both before the numeric path so callers get a
-    # warning instead of a wrong but plausible-looking result.  np.bool_ is a
-    # subclass of Python bool in numpy ≥ 1.20, so the isinstance check catches it
-    # via the bool arm; the explicit np.bool_ arm is kept as a belt-and-suspenders
-    # guard for older numpy versions where isinstance(np.bool_(True), bool) is False.
+    # bool subclasses int, so float(True)==1.0 would silently produce a misleading
+    # £1 value.  np.bool_ is not a subclass of Python bool in any NumPy version
+    # (it subclasses np.generic); both are listed explicitly in the isinstance tuple
+    # so the guard is correct across all supported NumPy versions.
     if isinstance(raw, (bool, np.bool_)):
         return 0.0, " Warning: declared value was not a number; defaulted to £0 for risk assessment."
     # pd.NaT and pd.NA are not bool, not str, and float() raises TypeError on them.
@@ -570,9 +568,9 @@ def _is_normalised_float(value: Any) -> bool:
     Used as a fast-path guard to skip a redundant _parse_value round-trip when
     the caller (e.g. classify_row) has already parsed the value via _parse_value.
     Accepts Python float, int, and numpy numeric types (e.g. np.float64) that are
-    coercible to float — but not bool/np.bool_ (which subclass int) or str.
-    np.bool_ is a subclass of bool in numpy ≥ 1.20; the explicit check covers
-    both old and new numpy.
+    coercible to float — but not bool/np.bool_ or str.  bool subclasses int;
+    np.bool_ is not a subclass of Python bool (it subclasses np.generic).
+    Both are listed explicitly so the guard is correct across all NumPy versions.
     """
     if isinstance(value, (bool, np.bool_, str)):
         return False
@@ -1109,11 +1107,10 @@ def classify_row(row: pd.Series) -> pd.Series:
     except Exception as e:
         row_idx = getattr(row, "name", None)
         # hasattr(__index__) covers Python int and numpy integer scalars.
-        # bool and np.bool_ are excluded explicitly: bool subclasses int, so
+        # bool and np.bool_ are excluded explicitly: bool subclasses int (so
         # True+1=2 and False+1=1 would produce a misleading "Row 2:"/"Row 1:"
-        # prefix.  In numpy < 2.0, np.bool_ had __index__ and subclassed bool;
-        # in numpy ≥ 2.0 it has neither, so the isinstance guard here is
-        # belt-and-suspenders across all supported numpy versions.
+        # prefix), and np.bool_ may expose __index__ depending on NumPy version.
+        # Listing both in isinstance handles all supported NumPy versions.
         display_idx = (
             (row_idx + 1)
             if hasattr(row_idx, "__index__") and not isinstance(row_idx, (bool, np.bool_))
