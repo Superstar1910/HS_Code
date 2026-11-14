@@ -864,7 +864,17 @@ def _classify_product_cached(desc: str, material_lower: str, category_lower: str
     # category_lower=="beauty" are mutually exclusive, so is_cosmetics cannot be True
     # when this branch evaluates).  It is kept for parity with _bag_by_keyword and
     # to ensure the guard remains correct if the category set ever expands.
-    _bag_by_category = category_lower == "bags" and not is_fashion and not is_scarf and not is_food and not is_perfume and not is_cosmetics
+    # `not _scarf_raw` (not `not is_scarf`): mirrors the same guard used in is_food
+    # (line 824).  is_scarf is False for two suppressed cases — _scarf_technical
+    # (e.g. "scarf joint cutter", a woodworking tool) and _scarf_ring (e.g. "scarf
+    # ring", a fashion clasp, HS 6217).  Using `not is_scarf` would allow both to
+    # reach _bag_by_category when category="bags", routing a woodworking tool or a
+    # fashion clasp to HS 4202 (bags) — a declaration error.  Any scarf/shawl word
+    # in the description is a non-bag signal regardless of whether is_scarf was
+    # suppressed; _scarf_raw is the correct gate here.  _bag_by_keyword does not
+    # carry this guard because an explicit bag keyword in the description ("bag",
+    # "wallet", etc.) overrides a co-present scarf modifier.
+    _bag_by_category = category_lower == "bags" and not is_fashion and not _scarf_raw and not is_food and not is_perfume and not is_cosmetics
     is_bag = _bag_by_keyword or _bag_by_category
 
     # Scarf detection: food category overrides scarf keywords for consistency with the
