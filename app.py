@@ -1881,7 +1881,6 @@ elif page == "Review Queue":
                 "⚠️",
             )
 
-        st.write("")
         if st.button("🗑️ Clear Queue", help="Remove all items from the review queue. This cannot be undone."):
             cleared_count = len(st.session_state["review_items"])
             st.session_state["review_items"].clear()
