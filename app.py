@@ -1401,7 +1401,9 @@ def _process_bulk_upload(file_bytes: bytes, filename: str, file_id: tuple[str, s
             )))
             return
         classified = pd.concat(_chunks, ignore_index=True)
+        del _chunks
         result_df = pd.concat([input_df, classified], axis=1)
+        del classified
     except Exception as e:
         st.session_state["_bulk_messages"].append(("error", f"Classification failed: {type(e).__name__}: {e}"))
         return
