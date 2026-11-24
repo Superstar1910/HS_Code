@@ -1046,6 +1046,13 @@ def _classify_product_cached(desc: str, material_lower: str, category_lower: str
         # — contradicting the documented intent and potentially under-declaring duty.
         # `not _scarf_technical`: mirrors the same reasoning — a suppressed scarf keyword
         # (e.g. "shawl collar blazer") must fall through to UNCLASSIFIED, not HS 4203.
+        # Wallet guard: wallets, coin purses and similar small articles are HS 4202.31
+        # (travel goods, 16% duty), not HS 4203.29 (clothing accessories, 3.7% duty).
+        # _bag_by_keyword is False here because category="fashion_accessories" suppresses
+        # it (keyword bag items in that category are not routed via is_bag), so this branch
+        # can fire for a "leather wallet" with an incorrect category, producing a ~12 pp
+        # duty under-declaration.  The wallet check below corrects that: when _WALLET_RE
+        # matches, route to HS 4202.31 regardless of the category field.
         _is_glove = bool(_GLOVE_RE.search(desc))
         if _is_glove:
             return types.MappingProxyType({
@@ -1056,6 +1063,17 @@ def _classify_product_cached(desc: str, material_lower: str, category_lower: str
                 "duty": "3.7%",
                 "vat": "20%",
                 "explanation": "Classified under clothing accessories of leather — gloves and mittens (HS 4203.20); verify outer surface is genuine or composition leather." + hv_note,
+            })
+        _is_wallet = bool(_WALLET_RE.search(desc))
+        if _is_wallet:
+            return types.MappingProxyType({
+                "hs6": "420231",
+                "uk_code": "4202310000",
+                "confidence": 0.75,
+                "risk": RISK_RED if high_value else RISK_AMBER,
+                "duty": "16%",
+                "vat": "20%",
+                "explanation": "Classified under leather wallets, coin purses and similar small leather articles (HS 4202.31); verify precise subheading — non-leather coin purses (textile/plastic outer): 4202.32." + hv_note,
             })
         return types.MappingProxyType({
             "hs6": "420329",
