@@ -248,11 +248,12 @@ _SCARF_TECHNICAL_RE = re.compile(
     r'|\b(?:joint|joints|jointing|weld|welds|cut|cuts|cutter|cutters|plane|planes|router|routers|bit|bits)[-\s]+(?:scarf|scarfs|scarves)\b'
     r'|\bshawl[-\s]+(?:collar|lapel|neckline|neck)\b'
 )
-# "Scarf ring" / "scarves ring" / "shawl ring" names a fashion clasp or holder worn
-# to secure or style a scarf or shawl — it is a clothing accessory (HS 6217.90), not
-# a scarf (HS 6214).  "shawl|shawls" is included for consistency with _SCARF_RE: a
-# shawl pin/clasp is the same type of accessory as a scarf ring and must route to
-# HS 621790, not HS 621490 (scarves, 12% duty), which is a commodity-code error.
+# "Scarf ring" / "scarfs ring" / "scarves ring" / "shawl ring" / "shawls ring" names
+# a fashion clasp or holder worn to secure or style a scarf or shawl — it is a
+# clothing accessory (HS 6217.90), not a scarf (HS 6214).  All five noun forms are
+# matched to stay consistent with _SCARF_RE, which also covers scarf|scarfs|scarves
+# and shawl|shawls: a shawl pin/clasp is the same type of accessory as a scarf ring
+# and must route to HS 621790, not HS 621490 (scarves, 12% duty).
 # Only the "scarf/shawl BEFORE ring/rings" word order is matched: "ring scarf" /
 # "ring shawl" names an infinity/circular scarf (a genuine scarf) and must NOT be
 # suppressed.
